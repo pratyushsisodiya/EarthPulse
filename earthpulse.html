@@ -60,6 +60,7 @@ tailwind.config = {
   kbd { font-family:'IBM Plex Mono',monospace; font-size:10px; border:1px solid #1b2940; padding:1px 5px; border-radius:4px; color:#64748b; }
 </style>
 <base target="_blank">
+<base target="_blank">
 </head>
 <body class="antialiased overflow-x-hidden">
 <!-- ══════════ SIDEBAR ══════════ -->
@@ -286,7 +287,7 @@ tailwind.config = {
   </main>
 
   <footer class="px-6 py-3 border-t hair flex flex-wrap gap-4 items-center text-[10px] text-mut">
-    <span class="num">EARTHPULSE BUILD 2.4.1</span><span>SEISMIC: USGS</span><span>WEATHER/AQ: OPEN-METEO</span>
+    <span class="num">EARTHPULSE BUILD 2.4.2</span><span>SEISMIC: USGS</span><span>WEATHER/AQ: OPEN-METEO</span>
     <span class="ml-auto">Data shown is observed or labeled otherwise · <span id="staleWarn" class="text-warn hidden">STALE DATA — refresh pending</span></span>
   </footer>
 </div>
@@ -307,7 +308,7 @@ tailwind.config = {
 
 <script>
 /* ═══════════════════════════════════════════════════
-   EARTHPULSE — data layer (typed-ish services)/
+   EARTHPULSE — data layer (typed-ish services)
    ═══════════════════════════════════════════════════ */
 const SRC = {
   usgsDay:  'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson',
@@ -317,7 +318,7 @@ const SRC = {
   geo:      'https://geocoding-api.open-meteo.com/v1/search',
   kp:       'https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json',
   xray:     'https://services.swpc.noaa.gov/json/goes/primary/xrays-1-day.json',
-  temp:     'https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/0/1850-2026/data.json',
+  get temp(){ return `https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/0/1850-${new Date().getFullYear()}/data.json`; },
   storms:   'https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH'
 };
 const state = {
@@ -332,6 +333,8 @@ const timeAgo = t => { const s=(Date.now()-t)/1000; if(s<60)return Math.max(1,s|
 const deg = t => state.settings.units==='F' ? (t*9/5+32).toFixed(1)+'°F' : t.toFixed(1)+'°C';
 const sevClass = m => m>=6?'sev-high':m>=4.5?'sev-med':'sev-low';
 const sevLabel = m => m>=6?'HIGH':m>=4.5?'MODERATE':'LOW';
+/* NOAA SWPC timestamps are "YYYY-MM-DD HH:mm:ss" — parse as UTC, not local time */
+const parseSWPCTime = s => new Date(String(s).replace(' ', 'T') + 'Z');
 
 async function fetchJSON(url, key){
   const ctl = new AbortController(); const to = setTimeout(()=>ctl.abort(), 12000);
@@ -622,25 +625,27 @@ async function loadSolar(){
 function buildSolarCharts(){
   const kpRows=Array.isArray(state.kp)?state.kp.slice(1).filter(r=>Array.isArray(r)&&Number.isFinite(Number(r[1]))):[];
   const kp=kpRows.slice(-48);
-  if(kp.length) mkChart('chKp',{type:'bar',data:{labels:kp.map(r=>new Date(r[0]).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})),datasets:[{data:kp.map(r=>Number(r[1])),backgroundColor:'rgba(251,191,36,.55)',borderWidth:0}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:12}},y:{beginAtZero:true,max:9,title:{display:true,text:'Kp'}}}}});
+  if(kp.length) mkChart('chKp',{type:'bar',data:{labels:kp.map(r=>parseSWPCTime(r[0]).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})),datasets:[{data:kp.map(r=>Number(r[1])),backgroundColor:'rgba(251,191,36,.55)',borderWidth:0}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:12}},y:{beginAtZero:true,max:9,title:{display:true,text:'Kp'}}}}});
   else if($('#chKp')) { if(state.charts.chKp) state.charts.chKp.destroy(); }
 
   const xr=Array.isArray(state.xray)?state.xray.filter(r=>r&&r.energy==='0.1-0.8nm'&&Number.isFinite(Number(r.flux))).slice(-48):[];
-  if(xr.length) mkChart('chXray',{type:'line',data:{labels:xr.map(r=>new Date(r.time_tag).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})),datasets:[{data:xr.map(r=>Number(r.flux)),borderColor:'#f87171',backgroundColor:'rgba(248,113,113,.1)',fill:true,tension:.25,pointRadius:0}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:12}},y:{type:'logarithmic',title:{display:true,text:'W/m²'}}}}});
+  if(xr.length) mkChart('chXray',{type:'line',data:{labels:xr.map(r=>parseSWPCTime(r.time_tag).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})),datasets:[{data:xr.map(r=>Number(r.flux)),borderColor:'#f87171',backgroundColor:'rgba(248,113,113,.1)',fill:true,tension:.25,pointRadius:0}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:12}},y:{type:'logarithmic',title:{display:true,text:'W/m²'}}}}});
 }
 
 /* ═══════ Time machine ═══════ */
 async function buildTimeMachine(){
   const wc=$('#whatChanged'); wc.innerHTML='<div class="label">WHAT CHANGED?</div><div class="skel h-5 w-2/3 mt-3"></div>';
-  // seismic then/now
+  // seismic then/now — computed at function scope so both chart and summary can use them
+  let older=null, recent=null, seisDelta=null;
   if(state.month){
-    const now=Date.now(); const t0=now-15*864e5;
-    const older=state.month.filter(f=>f.properties.time<t0).length;
-    const recent=state.month.filter(f=>f.properties.time>=t0).length;
+    const t0=Date.now()-15*864e5;
+    older=state.month.filter(f=>f.properties.time<t0).length;
+    recent=state.month.filter(f=>f.properties.time>=t0).length;
+    seisDelta=((recent-older)/Math.max(1,older)*100);
     $('#tmThen').textContent=older; $('#tmNow').textContent=recent;
     const perDay={}; state.month.forEach(f=>{const d=new Date(f.properties.time);const k=`${d.getUTCMonth()+1}/${d.getUTCDate()}`;perDay[k]=(perDay[k]||0)+1;});
     mkChart('chTM',{type:'line',data:{labels:Object.keys(perDay),datasets:[{data:Object.values(perDay),borderColor:'#22d3ee',backgroundColor:'rgba(34,211,238,.12)',fill:true,tension:.35,pointRadius:2}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:10}}}}});
-  }
+  } else { $('#tmThen').textContent='—'; $('#tmNow').textContent='—'; }
   // tokyo temp window
   try {
     const w = await fetchJSON(`${SRC.meteo}?latitude=35.68&longitude=139.69&hourly=temperature_2m&past_days=7&forecast_days=1&timezone=auto`,'tm');
@@ -648,19 +653,15 @@ async function buildTimeMachine(){
     $('#tmTThen').textContent=deg(data[0]); $('#tmTNow').textContent=deg(data[data.length-1]);
     mkChart('chTMTemp',{type:'line',data:{labels,datasets:[{data,borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.1)',fill:true,tension:.4,pointRadius:0}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:8}}}}});
     const d0=data[0], d1=data[data.length-1], dd=d1-d0;
-    wc.innerHTML = `<div class="label mb-3">WHAT CHANGED? — verified against retrieved data</div>
-      <div class="space-y-3 text-[13px]">
-        ${changedRow('Global seismicity (15-day split)', older=>0, null)}
-      </div>`;
-    const seisDelta = state.month? ((recent-older)/Math.max(1,older)*100):null;
+    const rows=[];
+    if(seisDelta!==null) rows.push(row('Earthquake activity, days 1–15 vs 16–30', `${older} events`, `${recent} events`, (seisDelta>=0?'+':'')+seisDelta.toFixed(0)+'%', Math.abs(seisDelta)>15?'warn':'ok','USGS all_month'));
+    rows.push(row('Tokyo air temperature, 7-day window', deg(d0), deg(d1), (dd>=0?'+':'')+dd.toFixed(1)+' °'+(state.settings.units==='F'?'F':'C'), Math.abs(dd)>5?'warn':'ok','Open-Meteo observed'));
     wc.innerHTML=`<div class="label mb-3">WHAT CHANGED? — computed from retrieved data only</div>
-      <div class="space-y-3 text-[13px]">
-        ${seisDelta==null?'':row('Earthquake activity, days 1–15 vs 16–30', `${older} events`, `${recent} events`, (seisDelta>=0?'+':'')+seisDelta.toFixed(0)+'%', seisDelta>15?'warn':'ok','USGS all_month')}
-        ${row('Tokyo air temperature, 7-day window', deg(d0), deg(d1), (dd>=0?'+':'')+dd.toFixed(1)+' °'+(state.settings.units==='F'?'F':'C'), Math.abs(dd)>5?'warn':'ok','Open-Meteo observed')}
+      <div class="space-y-3 text-[13px]">${rows.join('')}
         <div class="text-[11px] text-mut num pt-2 border-t hair">CONFIDENCE: HIGH · FULL FEED COVERAGE · NO ESTIMATED VALUES · UPDATED ${new Date().toUTCString().slice(5,25)} UTC</div>
       </div>`;
   } catch(e){
-    wc.innerHTML=`<div class="label mb-3">WHAT CHANGED?</div><div class="text-[13px] text-mut">Weather history unavailable — ${'Open-Meteo request failed'}.</div>`;
+    wc.innerHTML=`<div class="label mb-3">WHAT CHANGED?</div><div class="text-[13px] text-mut">Weather history unavailable — Open-Meteo request failed.</div>`;
   }
 }
 const row=(m,a,b,d,c,src)=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b hair pb-3">
@@ -668,7 +669,6 @@ const row=(m,a,b,d,c,src)=>`<div class="flex flex-wrap items-center gap-x-4 gap-
   <span class="num">${a} → <b class="text-accent">${b}</b></span>
   <span class="num text-[12px] ${c==='warn'?'text-warn':'text-emerald-400'}">${d}</span>
   <span class="text-[10px] text-mut num ml-auto">${src}</span></div>`;
-const changedRow=()=> '';
 
 /* ═══════ Brief ═══════ */
 function buildBrief(){
@@ -772,8 +772,8 @@ function closeRegion(){ const M=$('#regionModal'); M.classList.add('hidden'); M.
 let globe, scene, camera, renderer, globeGroup, ready=false, autoRotate=true, dragging=false, px=0, py=0;
 function initGlobe(){
   if(ready) return;
-  if(typeof THREE==='undefined'){ globeError?.('three.js did not load (check CDN access)'); return; }
-  if(typeof ThreeGlobe==='undefined'){ globeError?.('three-globe did not load (check CDN access)'); return; }
+  if(typeof THREE==='undefined'){ console.error('[Globe] three.js did not load (check CDN access)'); return; }
+  if(typeof ThreeGlobe==='undefined'){ console.error('[Globe] three-globe did not load (check CDN access)'); return; }
 
   const wrap=$('#globeWrap');
   if(!wrap || wrap.clientWidth<10 || wrap.clientHeight<10){
@@ -801,7 +801,12 @@ function initGlobe(){
       .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
       .showAtmosphere(true)
       .atmosphereColor('#3aa8ff')
-      .atmosphereAltitude(0.22);
+      .atmosphereAltitude(0.22)
+      .pointLat('lat')
+      .pointLng('lon')
+      .pointColor('color')
+      .pointAltitude('alt')
+      .pointRadius('r');
     globeGroup.add(globe);
 
     addOrbitalLayer();
@@ -894,6 +899,49 @@ function initGlobe(){
   }
 }
 
+/* Convert a raycast hit point (globe-local, sphere radius 100 centered at origin)
+   back to geographic coordinates, matching three-globe's getCoords convention:
+   x = -r·sinφ·cosθ, y = r·cosφ, z = r·sinφ·sinθ  with φ=(90-lat), θ=(lon+180) */
+function latLonFromLocal(local){
+  const r=100;
+  const lat=90-Math.acos(Math.min(1,Math.max(-1,local.y/r)))*180/Math.PI;
+  const lon=Math.atan2(local.z,-local.x)*180/Math.PI-180;
+  return { lat:Math.max(-90,Math.min(90,lat)), lon:((lon+540)%360)-180 };
+}
+
+/* Click on the globe: open the region explorer at the clicked coordinates,
+   snapping to the nearest recorded earthquake within 600 km if one exists. */
+function handleGlobeClick(e){
+  if(!ready||!globe||!renderer||!camera) return;
+  const rect=renderer.domElement.getBoundingClientRect();
+  const mouse=new THREE.Vector2(
+    ((e.clientX-rect.left)/rect.width)*2-1,
+    -((e.clientY-rect.top)/rect.height)*2+1
+  );
+  const ray=new THREE.Raycaster();
+  ray.setFromCamera(mouse,camera);
+  const hits=ray.intersectObject(globe,true);
+  if(!hits.length) return;
+  const {lat,lon}=latLonFromLocal(globeGroup.worldToLocal(hits[0].point.clone()));
+  let best=null, bestD=600;
+  if(state.day){
+    const rad=Math.PI/180, R=6371;
+    for(const f of state.day){
+      const [qlon,qlat]=f.geometry.coordinates;
+      const dx=(qlat-lat)*rad, dy=(qlon-lon)*rad;
+      const s=Math.sin(dx/2)**2+Math.cos(lat*rad)*Math.cos(qlat*rad)*Math.sin(dy/2)**2;
+      const d=2*R*Math.asin(Math.sqrt(s));
+      if(d<bestD){ bestD=d; best=f; }
+    }
+  }
+  if(best){
+    const [qlon,qlat]=best.geometry.coordinates;
+    openRegion(qlat,qlon,best.properties.place);
+  } else {
+    openRegion(lat,lon,`Region ${lat.toFixed(1)}°, ${lon.toFixed(1)}°`);
+  }
+}
+
 let issObj=null, issRing=null, issGlow=null;
 const ISS_ALT_FRAC=0.064;
 const ISS_INCLINATION=51.6*Math.PI/180;
@@ -945,8 +993,8 @@ function focusGlobe(lat,lon){
   const to=new THREE.Vector3(x,y,z).normalize().multiplyScalar(camDist);
   const fromQ=globeGroup.quaternion.clone();
   const m=new THREE.Matrix4().lookAt(to,new THREE.Vector3(0,0,0),new THREE.Vector3(0,1,0));
-  const toQ=new THREE.Quaternion().setFromRotationMatrix(m); globeGroup.quaternion.set(0,0,0,1);
-  const targetQ=toQ; const iq=new THREE.Quaternion();
+  const targetQ=new THREE.Quaternion().setFromRotationMatrix(m);
+  const iq=new THREE.Quaternion();
   const step=()=>{ anim.t+=0.045; const k=Math.min(1,anim.t); const e=1-Math.pow(1-k,3);
     iq.slerpQuaternions(fromQ,targetQ,e); globeGroup.quaternion.copy(iq);
     camera.position.lerpVectors(from,to,e);
