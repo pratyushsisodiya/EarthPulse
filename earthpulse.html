@@ -62,488 +62,6 @@ tailwind.config = {
 <base target="_blank">
 </head>
 <body class="antialiased overflow-x-hidden">
-import { OrbitControls, Stars, useTexture } from "@react-three/drei";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Suspense, useEffect, useMemo, useRef } from "react";
-import * as THREE from "three";
-
-import earthTexture from "@/assets/earth-map.jpg";
-import { SEVERITY_COLOR, latLonToVector3, subsolarPoint } from "./geo";
-
-export type GlobeMarker = {
-  id: string;
-  lat: number;
-  lon: number;
-  severity: "info" | "watch" | "elevated" | "severe";
-  size?: number | undefined;
-  label: string;
-};
-
-export type GlobeSceneProps = {
-  markers: GlobeMarker[];
-  focus?: { lat: number; lon: number; id?: string | undefined } | null | undefined;
-  autoRotate?: boolean | undefined;
-  onSelect?: ((id: string) => void) | undefined;
-  interactive?: boolean | undefined;
-  showOrbitalTrack?: boolean | undefined; // Optional ISS/satellite orbit line
-};
-
-const RADIUS = 2;
-
-function Earth() {
-  const map = useTexture(earthTexture);
-  useEffect(() => {
-    map.colorSpace = THREE.SRGBColorSpace;
-    map.anisotropy = 4;
-  }, [map]);
-
-  return (
-    <mesh>
-      <sphereGeometry args={[RADIUS, 96, 96]} />
-      <meshStandardMaterial map={map} roughness={0.92} metalness={0.05} />
-    </mesh>
-  );
-}
-
-/** Additive fresnel shell that reads as an atmospheric limb. */
-function Atmosphere() {
-  const material = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        side: THREE.BackSide,
-        depthWrite: false,
-        uniforms: { uColor: { value: new THREE.Color("#5ad9ff") } },
-        vertexShader: `
-          varying vec3 vNormal;
-          varying vec3 vView;
-          void main() {
-            vNormal = normalize(normalMatrix * normal);
-            vec4 mv = modelViewMatrix * vec4(position, 1.0);
-            vView = normalize(-mv.xyz);
-            gl_Position = projectionMatrix * mv;
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 uColor;
-          varying vec3 vNormal;
-          varying vec3 vView;
-          void main() {
-            float rim = pow(1.0 - abs(dot(vNormal, vView)), 2.4);
-            gl_FragColor = vec4(uColor, rim * 0.85);
-          }
-        `,
-      }),
-    [],
-  );
-
-  return (
-    <mesh scale={1.16}>
-      <sphereGeometry args={[RADIUS, 64, 64]} />
-      <primitive object={material} attach="material" />
-    </mesh>
-  );
-}
-
-/** Optional visual orbital trajectory (e.g., ISS orbital inclination 51.6°). */
-function OrbitalPath() {
-  const points = useMemo(() => {
-    const pts: THREE.Vector3[] = [];
-    const orbitRadius = RADIUS * 1.15;
-    const inclination = THREE.MathUtils.degToRad(51.6); // ISS orbital inclination
-
-    for (let i = 0; i <= 128; i++) {
-      const theta = (i / 128) * Math.PI * 2;
-      const x = orbitRadius * Math.cos(theta);
-      const y = orbitRadius * Math.sin(theta) * Math.sin(inclination);
-      const z = orbitRadius * Math.sin(theta) * Math.cos(inclination);
-      pts.push(new THREE.Vector3(x, y, z));
-    }
-    return pts;
-  }, []);
-
-  const lineGeometry = useMemo(() => new THREE.BufferGeometry().setFromPoints(points), [points]);
-
-  return (
-    <line geometry={lineGeometry}>
-      <lineBasicMaterial color="#5ad9ff" transparent opacity={0.35} />
-    </line>
-  );
-}
-
-function Markers({
-  markers,
-  onSelect,
-}: {
-  markers: GlobeMarker[];
-  onSelect?: ((id: string) => void) | undefined;
-}) {
-  return (
-    <group>
-      {markers.map((marker) => {
-        const position = latLonToVector3(marker.lat, marker.lon, RADIUS * 1.012);
-        const color = SEVERITY_COLOR[marker.severity] ?? "#4fc3f7";
-        const size = marker.size ?? 0.02;
-        return (
-          <group key={marker.id} position={position}>
-            <mesh
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelect?.(marker.id);
-              }}
-              onPointerOver={(event) => {
-                event.stopPropagation();
-                document.body.style.cursor = "pointer";
-              }}
-              onPointerOut={() => {
-                document.body.style.cursor = "auto";
-              }}
-            >
-              <sphereGeometry args={[size, 12, 12]} />
-              <meshBasicMaterial color={color} toneMapped={false} />
-            </mesh>
-            <mesh>
-              <sphereGeometry args={[size * 2.4, 12, 12]} />
-              <meshBasicMaterial color={color} transparent opacity={0.18} toneMapped={false} />
-            </mesh>
-          </group>
-        );
-      })}
-    </group>
-  );
-}
-
-function SunLight() {
-  const light = useRef<THREE.DirectionalLight>(null);
-  useEffect(() => {
-    const update = () => {
-      const { lat, lon } = subsolarPoint();
-      const position = latLonToVector3(lat, lon, 12);
-      light.current?.position.copy(position);
-    };
-    update();
-    const timer = setInterval(update, 60_000);
-    return () => clearInterval(timer);
-  }, []);
-  return <directionalLight ref={light} intensity={2.4} color="#fff6e8" />;
-}
-
-function CameraRig({
-  focus,
-  autoRotate,
-  interactive = true,
-}: {
-  focus?: { lat: number; lon: number } | null | undefined;
-  autoRotate: boolean;
-  interactive?: boolean | undefined;
-}) {
-  const { camera } = useThree();
-  const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
-  const flight = useRef<{ from: THREE.Vector3; to: THREE.Vector3; t: number } | null>(null);
-
-  useEffect(() => {
-    if (!focus) return;
-    const distance = Math.max(camera.position.length() * 0.85, 3.4);
-    flight.current = {
-      from: camera.position.clone(),
-      to: latLonToVector3(focus.lat, focus.lon, distance),
-      t: 0,
-    };
-  }, [focus, camera]);
-
-  useFrame((_, delta) => {
-    const flying = flight.current;
-    if (flying) {
-      flying.t = Math.min(flying.t + delta * 1.1, 1);
-      const eased = 1 - (1 - flying.t) ** 3;
-      const from = flying.from.clone().normalize();
-      const to = flying.to.clone().normalize();
-      const angle = Math.acos(THREE.MathUtils.clamp(from.dot(to), -1, 1));
-      const direction =
-        angle < 1e-4
-          ? to
-          : from
-              .clone()
-              .multiplyScalar(Math.sin((1 - eased) * angle) / Math.sin(angle))
-              .add(to.clone().multiplyScalar(Math.sin(eased * angle) / Math.sin(angle)))
-              .normalize();
-      const radius = THREE.MathUtils.lerp(flying.from.length(), flying.to.length(), eased);
-      camera.position.copy(direction.multiplyScalar(radius));
-      camera.lookAt(0, 0, 0);
-
-      if (flying.t >= 1) {
-        flight.current = null;
-      }
-    }
-
-    // Always update controls each frame so damping and auto-rotation operate smoothly
-    controlsRef.current?.update();
-  });
-
-  return (
-    <OrbitControls
-      ref={controlsRef}
-      enabled={interactive}
-      enablePan={false}
-      enableDamping
-      dampingFactor={0.08}
-      rotateSpeed={0.5}
-      zoomSpeed={0.8}
-      minDistance={2.6}
-      maxDistance={9}
-      autoRotate={autoRotate && !flight.current}
-      autoRotateSpeed={0.3}
-      onStart={() => {
-        // Cancel automated flight animation immediately when user manually drags
-        flight.current = null;
-      }}
-    />
-  );
-}
-
-export default function GlobeScene({
-  markers,
-  focus,
-  autoRotate = true,
-  interactive = true,
-  showOrbitalTrack = false,
-  onSelect,
-}: GlobeSceneProps) {
-  return (
-    <Canvas
-      className="touch-none select-none"
-      camera={{ position: [0, 1.4, 5.2], fov: 42 }}
-      dpr={[1, 2]}
-      gl={{ antialias: true, powerPreference: "high-performance" }}
-      style={{ background: "transparent", width: "100%", height: "100%" }}
-    >
-      <ambientLight intensity={0.28} color="#5f7fa8" />
-      <SunLight />
-      <hemisphereLight intensity={0.15} color="#6ad4ff" groundColor="#0b1220" />
-      <Stars radius={80} depth={40} count={2600} factor={3} saturation={0} fade speed={0.4} />
-      <Suspense fallback={null}>
-        <Earth />
-      </Suspense>
-      <Atmosphere />
-      {showOrbitalTrack && <OrbitalPath />}
-      <Markers markers={markers} onSelect={onSelect} />
-      <CameraRig focus={focus ?? null} autoRotate={autoRotate} interactive={interactive} />
-    </Canvas>
-  );
-}
-/* ═══════ GLOBE STATE ═══════ */
-let globe, scene, camera, renderer, globeGroup, quakeGroup,
-    quakeRaycastTargets = [], raycaster, mouseNDC,
-    ready = false, autoRotate = true, dragging = false, dragDist = 0, px = 0, py = 0;
-
-function globeError(msg){
-  console.error('[Globe] init failed:', msg);
-  const el = document.querySelector('#globeLoading');
-  if(el) el.innerHTML = `<div class="text-danger text-[12px] max-w-xs text-center px-4">⚠ Globe failed to load: ${msg}</div>
-    <button id="retryGlobe" class="btn chip mt-2">RETRY</button>`;
-  ready = false;
-  const rb = document.querySelector('#retryGlobe');
-  if(rb) rb.onclick = () => {
-    if(el){ el.innerHTML = '<div class="skel w-40 h-3"></div><div class="skel w-28 h-3"></div><div class="label mt-2">INITIALIZING ORBITAL RENDERER…</div>'; el.style.display = 'flex'; }
-    initGlobe();
-  };
-}
-
-function initGlobe(){
-  if(ready) return;
-  if(typeof THREE === 'undefined'){ globeError('three.js did not load (check CDN access)'); return; }
-  if(typeof ThreeGlobe === 'undefined'){ globeError('three-globe did not load (check CDN access)'); return; }
-
-  const wrap = document.querySelector('#globeWrap');
-  if(!wrap || wrap.clientWidth < 10 || wrap.clientHeight < 10){
-    globeError('globe container has no size yet — retrying shortly');
-    setTimeout(() => { if(!ready) initGlobe(); }, 500);
-    return;
-  }
-  ready = true;
-
-  try {
-    scene = new THREE.Scene();
-    camera = new THREE.PerspectiveCamera(45, wrap.clientWidth / wrap.clientHeight, 1, 4000);
-    camera.position.z = 340;
-
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
-    wrap.appendChild(renderer.domElement);
-
-    globeGroup = new THREE.Group();
-    scene.add(globeGroup);
-
-    // NOTE: raw three-globe only supports globeImageUrl/bumpImageUrl/atmosphere —
-    // it has NO pointLabel/onPointClick (those only exist on the separate
-    // globe.gl wrapper, which owns its own DOM element). Markers/interaction
-    // below are built manually instead.
-    globe = new ThreeGlobe()
-      .globeImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-blue-marble.jpg')
-      .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
-      .showAtmosphere(true).atmosphereColor('#3aa8ff').atmosphereAltitude(0.22);
-    globeGroup.add(globe);
-
-    quakeGroup = new THREE.Group();
-    globeGroup.add(quakeGroup);
-
-    raycaster = new THREE.Raycaster();
-    mouseNDC = new THREE.Vector2();
-
-    // extra atmospheric glow shell
-    const glowMat = new THREE.ShaderMaterial({
-      transparent: true, side: THREE.BackSide,
-      vertexShader: 'varying vec3 vN; void main(){ vN=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
-      fragmentShader: 'varying vec3 vN; void main(){ float i=pow(0.72-dot(vN,vec3(0,0,1.0)),2.2); gl_FragColor=vec4(0.3,0.65,1.0,1.0)*i; }'
-    });
-    globeGroup.add(new THREE.Mesh(new THREE.SphereGeometry(100 * 1.22, 64, 64), glowMat));
-
-    // starfield
-    const sg = new THREE.BufferGeometry(); const sp = [];
-    for(let i = 0; i < 1800; i++){
-      const r = 1600 + Math.random() * 600, t = Math.random() * Math.PI * 2, p = Math.acos(2 * Math.random() - 1);
-      sp.push(r * Math.sin(p) * Math.cos(t), r * Math.sin(p) * Math.sin(t), r * Math.cos(p));
-    }
-    sg.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
-    scene.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0x88aacc, size: 1.4, transparent: true, opacity: .7 })));
-
-    // ═══ interaction: drag to rotate, click/hover to pick a marker ═══
-    const el = renderer.domElement;
-    el.addEventListener('pointerdown', e => { dragging = true; px = e.clientX; py = e.clientY; dragDist = 0; });
-    window.addEventListener('pointerup', e => {
-      dragging = false;
-      if(dragDist < 6 && e.target === el) handleGlobeClick(e);
-    });
-    window.addEventListener('pointermove', e => {
-      if(dragging){
-        dragDist += Math.hypot(e.clientX - px, e.clientY - py);
-        globeGroup.rotation.y += (e.clientX - px) * 0.004;
-        globeGroup.rotation.x = Math.max(-1, Math.min(1, globeGroup.rotation.x + (e.clientY - py) * 0.003));
-        px = e.clientX; py = e.clientY;
-      }
-      if(e.target === el || el.contains(e.target)) updateGlobeHover(e); else hideGlobeTooltip();
-    });
-    el.addEventListener('wheel', e => {
-      e.preventDefault();
-      camera.position.z = Math.max(160, Math.min(700, camera.position.z + e.deltaY * 0.35));
-    }, { passive: false });
-
-    new ResizeObserver(() => {
-      const w = wrap.clientWidth, h = wrap.clientHeight;
-      camera.aspect = w / h; camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    }).observe(wrap);
-
-    const loadingEl = document.querySelector('#globeLoading');
-    if(loadingEl) loadingEl.style.display = 'none';
-
-    updateGlobePoints();
-
-    (function tick(){
-      requestAnimationFrame(tick);
-      if(autoRotate && !dragging) globeGroup.rotation.y += 0.0011;
-      renderer.render(scene, camera);
-    })();
-  } catch(e){
-    globeError(e.message || String(e));
-  }
-}
-
-/* ═══════ MARKERS (built manually — no points-layer API needed) ═══════ */
-function updateGlobePoints(){
-  if(!ready || !globe || !quakeGroup || !window.state?.day) return;
-  while(quakeGroup.children.length) quakeGroup.remove(quakeGroup.children[0]);
-  quakeRaycastTargets = [];
-
-  state.day.filter(e => e.properties.mag != null).forEach(e => {
-    const lon = e.geometry.coordinates[0], lat = e.geometry.coordinates[1], mag = e.properties.mag;
-    const altFrac = 0.012 + (mag ?? 0) * 0.006;
-    const c = globe.getCoords(lat, lon, altFrac); // real utility method on raw three-globe
-
-    const colorHex = mag >= 7 ? 0xf87171 : mag >= 6 ? 0xfb923c : mag >= 4.5 ? 0xfbbf24 : 0x38bdf8;
-    const r = Math.max(0.6, (mag ?? 0) * 0.55);
-
-    const core = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 10), new THREE.MeshBasicMaterial({ color: colorHex, toneMapped: false }));
-    core.position.set(c.x, c.y, c.z);
-    core.userData = { lat, lon, place: e.properties.place, mag };
-
-    const glow = new THREE.Mesh(new THREE.SphereGeometry(r * 2.4, 10, 10), new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: .18, toneMapped: false }));
-    glow.position.copy(core.position);
-
-    quakeGroup.add(core); quakeGroup.add(glow);
-    quakeRaycastTargets.push(core);
-  });
-}
-
-/* ═══════ RAYCASTING: hover + click ═══════ */
-function pickQuakeAt(clientX, clientY){
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouseNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  mouseNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(mouseNDC, camera);
-  const hits = raycaster.intersectObjects(quakeRaycastTargets, false);
-  return hits.length ? hits[0].object.userData : null;
-}
-
-function handleGlobeClick(e){
-  const d = pickQuakeAt(e.clientX, e.clientY);
-  if(d){
-    focusGlobe(d.lat, d.lon);
-    // hook your own click behavior here, e.g. openRegion(d.lat, d.lon, d.place);
-  }
-}
-
-function hideGlobeTooltip(){
-  const tip = document.querySelector('#globeTooltip');
-  if(tip) tip.classList.add('hidden');
-  if(renderer) renderer.domElement.style.cursor = dragging ? 'grabbing' : 'grab';
-}
-
-function updateGlobeHover(e){
-  if(!ready) return;
-  const d = pickQuakeAt(e.clientX, e.clientY);
-  const tip = document.querySelector('#globeTooltip');
-  if(d){
-    tip.textContent = `M ${d.mag?.toFixed(1)} · ${d.place || 'Unknown location'}`;
-    tip.style.left = (e.clientX + 14) + 'px';
-    tip.style.top  = (e.clientY + 14) + 'px';
-    tip.classList.remove('hidden');
-    renderer.domElement.style.cursor = 'pointer';
-  } else {
-    hideGlobeTooltip();
-  }
-}
-
-/* ═══════ FLY-TO ANIMATION ═══════ */
-function focusGlobe(lat, lon){
-  if(!ready) return;
-  const r = 100, phi = (90 - lat) * Math.PI / 180, theta = (lon + 180) * Math.PI / 180;
-  const x = -r * Math.sin(phi) * Math.cos(theta), z = r * Math.sin(phi) * Math.sin(theta), y = r * Math.cos(phi);
-  const camDist = camera.position.length();
-  const anim = { t: 0 }; const from = camera.position.clone();
-  const to = new THREE.Vector3(x, y, z).normalize().multiplyScalar(camDist);
-  const fromQ = globeGroup.quaternion.clone();
-  const m = new THREE.Matrix4().lookAt(to, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0));
-  const toQ = new THREE.Quaternion().setFromRotationMatrix(m);
-  globeGroup.quaternion.set(0, 0, 0, 1);
-  const iq = new THREE.Quaternion();
-  (function step(){
-    anim.t += 0.045; const k = Math.min(1, anim.t); const e = 1 - Math.pow(1 - k, 3);
-    iq.slerpQuaternions(fromQ, toQ, e); globeGroup.quaternion.copy(iq);
-    camera.position.lerpVectors(from, to, e);
-    if(k < 1) requestAnimationFrame(step);
-  })();
-}
-
-/* ═══════ BOOT ═══════ */
-const globeObs = new IntersectionObserver(entries => {
-  entries.forEach(x => { if(x.isIntersecting && !ready) initGlobe(); });
-}, { threshold: .1 });
-globeObs.observe(document.querySelector('#globeWrap'));
-if(document.readyState === 'complete') initGlobe();
-else window.addEventListener('load', () => initGlobe());
 <!-- ══════════ SIDEBAR ══════════ -->
 <aside id="sidebar" class="fixed left-0 top-0 h-full w-[220px] glass z-40 flex flex-col transition-transform duration-300 -translate-x-full lg:translate-x-0">
   <div class="px-5 h-[60px] flex items-center gap-3 border-b hair">
@@ -625,10 +143,10 @@ else window.addEventListener('load', () => initGlobe());
         <div class="space-y-5">
           <!-- STATUS GRID -->
           <div class="grid grid-cols-2 gap-3">
-            <div class="glass rounded-lg p-4 statcard">
+            <div class="glass rounded-lg p-4 statcard" id="cardTemp">
               <div class="label">Global Temp Anomaly</div>
-              <div class="num text-xl mt-2 text-mut">DATA UNAVAILABLE</div>
-              <div class="text-[10px] text-mut mt-1">No free verified source · not fabricated</div>
+              <div class="num text-xl mt-2 text-mut" id="tempAnomaly">LOADING…</div>
+              <div class="text-[10px] text-mut mt-1" id="tempMeta">NOAA · global land + ocean · YTD</div>
             </div>
             <div class="glass rounded-lg p-4 statcard" id="cardQuakes">
               <div class="label">Earthquakes · 24 h</div>
@@ -637,13 +155,13 @@ else window.addEventListener('load', () => initGlobe());
             </div>
             <div class="glass rounded-lg p-4 statcard" id="cardStorms">
               <div class="label">Storms / Cyclones</div>
-              <div class="num text-xl mt-2 text-mut">DATA UNAVAILABLE</div>
-              <div class="text-[10px] text-mut mt-1">No reliable free API</div>
+              <div class="num text-xl mt-2 text-mut" id="stormCount">LOADING…</div>
+              <div class="text-[10px] text-mut mt-1" id="stormMeta">GDACS · global tropical cyclones</div>
             </div>
             <div class="glass rounded-lg p-4 statcard" id="cardSolar">
               <div class="label">Solar Activity</div>
-              <div class="num text-xl mt-2 text-mut">DATA UNAVAILABLE</div>
-              <div class="text-[10px] text-mut mt-1">Awaiting NOAA adapter</div>
+              <div class="num text-xl mt-2 text-mut" id="solarStatus">LOADING…</div>
+              <div class="text-[10px] text-mut mt-1" id="solarMeta">NOAA SWPC · Kp + GOES X-ray</div>
             </div>
           </div>
           <!-- WEATHER MONITOR -->
@@ -798,10 +316,13 @@ const SRC = {
   meteoAQ:  'https://air-quality-api.open-meteo.com/v1/air-quality',
   geo:      'https://geocoding-api.open-meteo.com/v1/search',
   kp:       'https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json',
-  xray:     'https://services.swpc.noaa.gov/json/goes/primary/xrays-1-day.json'
+  xray:     'https://services.swpc.noaa.gov/json/goes/primary/xrays-1-day.json',
+  temp:     'https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/0/1850-2026/data.json',
+  storms:   'https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH'
 };
 const state = {
   day: null, month: null, weather: null, aq: null, kp: null, xray: null,
+  temp: null, storms: null,
   lastFetch: {}, filter: 'all', charts: {}, modalChart: null,
   settings: JSON.parse(localStorage.getItem('ep_settings')||'{"units":"C","refresh":300000,"motion":false,"rotate":true}')
 };
@@ -909,9 +430,23 @@ document.querySelectorAll('#evFilters .chip').forEach(b=>b.onclick=()=>{
 });
 
 /* ═══════ Charts ═══════ */
-Chart.defaults.color='#64748b'; Chart.defaults.font.family="'IBM Plex Mono',monospace"; Chart.defaults.font.size=10;
-Chart.defaults.borderColor='rgba(56,120,190,.12)';
-function mkChart(id,cfg){ if(state.charts[id]) state.charts[id].destroy(); state.charts[id]=new Chart($('#'+id),cfg); }
+if(typeof Chart!=='undefined'){
+  Chart.defaults.color='#64748b';
+  Chart.defaults.font.family="'IBM Plex Mono',monospace";
+  Chart.defaults.font.size=10;
+  Chart.defaults.borderColor='rgba(56,120,190,.12)';
+}
+function mkChart(id,cfg){
+  if(typeof Chart==='undefined'){
+    const meta=$('#analyticsMeta');
+    if(meta) meta.textContent='Chart engine unavailable — check Chart.js CDN access.';
+    return;
+  }
+  const canvas=$('#'+id);
+  if(!canvas) return;
+  if(state.charts[id]) state.charts[id].destroy();
+  state.charts[id]=new Chart(canvas,cfg);
+}
 
 function buildAnalytics(){
   const meta=$('#analyticsMeta');
@@ -949,9 +484,138 @@ function buildAnalytics(){
   });
 }
 
+
+function stormFeatures(data){
+  if(Array.isArray(data)) return data;
+  if(Array.isArray(data?.features)) return data.features;
+  if(Array.isArray(data?.events)) return data.events;
+  if(Array.isArray(data?.data)) return data.data;
+  return [];
+}
+
+function formatStormName(e){
+  const p=e?.properties||e||{};
+  return p.name || p.eventname || p.eventName || p.title || 'Unnamed cyclone';
+}
+
+function stormEndTime(e){
+  const p=e?.properties||e||{};
+  const raw=p.todate || p.toDate || p.enddate || p.endDate || p.end || null;
+  const t=raw?Date.parse(raw):NaN;
+  return Number.isFinite(t)?t:null;
+}
+
+async function loadGlobalTemp(){
+  try{
+    const d=await fetchJSON(SRC.temp,'temp');
+    const rows=d?.data && typeof d.data==='object' ? Object.entries(d.data) : [];
+    const valid=rows
+      .map(([year,v])=>({year:Number(year), anomaly:Number(v?.anomaly ?? v?.value ?? v)}))
+      .filter(x=>Number.isFinite(x.year)&&Number.isFinite(x.anomaly))
+      .sort((a,b)=>a.year-b.year);
+    const latest=valid.at(-1);
+    if(!latest) throw new Error('NO_TEMP_DATA');
+    state.temp=latest;
+    $('#tempAnomaly').textContent=`${latest.anomaly>=0?'+':''}${latest.anomaly.toFixed(2)} °C`;
+    $('#tempMeta').textContent=`NOAA · ${latest.year} YTD · 1991–2020 baseline`;
+  }catch(e){
+    state.temp=null;
+    $('#tempAnomaly').textContent='UNAVAILABLE';
+    $('#tempMeta').textContent='NOAA Climate at a Glance feed unavailable';
+  }
+}
+
+async function loadStorms(){
+  try{
+    const to=new Date();
+    const from=new Date(Date.now()-14*864e5);
+    const qs=new URLSearchParams({
+      eventlist:'TC',
+      fromdate:from.toISOString().slice(0,10),
+      todate:to.toISOString().slice(0,10)
+    });
+    const d=await fetchJSON(`${SRC.storms}?${qs.toString()}`,'storms');
+    let events=stormFeatures(d);
+
+    // Keep storms whose latest available end date is still active or
+    // whose feed record has no end date. This avoids showing old storms.
+    const now=Date.now();
+    events=events.filter(e=>{
+      const end=stormEndTime(e);
+      return end===null || end>=now;
+    });
+
+    // Deduplicate by event ID/name.
+    const seen=new Set();
+    events=events.filter(e=>{
+      const p=e?.properties||e||{};
+      const key=String(p.eventid||p.eventId||p.id||formatStormName(e)).toUpperCase();
+      if(seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    state.storms=events;
+    $('#stormCount').textContent=String(events.length);
+    $('#stormMeta').textContent=events.length
+      ? events.slice(0,2).map(formatStormName).join(' · ')
+      : 'GDACS · no active tropical cyclones reported';
+  }catch(e){
+    state.storms=null;
+    $('#stormCount').textContent='UNAVAILABLE';
+    $('#stormMeta').textContent='GDACS tropical cyclone feed unavailable';
+  }
+}
+
+function solarClassFromFlux(flux){
+  const f=Number(flux);
+  if(!Number.isFinite(f)||f<=0) return '—';
+  if(f>=1e-4) return `X${(f/1e-4).toFixed(1)}`;
+  if(f>=1e-5) return `M${(f/1e-5).toFixed(1)}`;
+  if(f>=1e-6) return `C${(f/1e-6).toFixed(1)}`;
+  if(f>=1e-7) return `B${(f/1e-7).toFixed(1)}`;
+  return `A${(f/1e-8).toFixed(1)}`;
+}
+
+function geomagneticLevel(kp){
+  const k=Number(kp);
+  if(!Number.isFinite(k)) return 'NO Kp';
+  if(k>=9) return 'G5';
+  if(k>=8) return 'G4';
+  if(k>=7) return 'G3';
+  if(k>=6) return 'G2';
+  if(k>=5) return 'G1';
+  return 'QUIET';
+}
+
+function updateSolarCard(){
+  const kpRows=Array.isArray(state.kp)
+    ? state.kp.slice(1).filter(r=>Array.isArray(r)&&Number.isFinite(Number(r[1])))
+    : [];
+  const latestKp=kpRows.at(-1)?.[1];
+
+  const xr=Array.isArray(state.xray)
+    ? state.xray.filter(r=>r&&r.energy==='0.1-0.8nm'&&Number.isFinite(Number(r.flux)))
+    : [];
+  const latestX=xr.at(-1)?.flux;
+
+  if(!Number.isFinite(Number(latestKp)) && !Number.isFinite(Number(latestX))){
+    $('#solarStatus').textContent='UNAVAILABLE';
+    $('#solarMeta').textContent='NOAA SWPC feed unavailable';
+    return;
+  }
+
+  const kp=Number(latestKp);
+  const level=geomagneticLevel(kp);
+  const flare=solarClassFromFlux(latestX);
+  $('#solarStatus').textContent=`Kp ${kp.toFixed(1)} · ${flare}`;
+  $('#solarMeta').textContent=`NOAA SWPC · ${level} geomagnetic level`;
+}
+
 async function loadSolar(){
   try { state.kp=await fetchJSON(SRC.kp,'kp'); } catch(e){ state.kp=null; }
   try { state.xray=await fetchJSON(SRC.xray,'xray'); } catch(e){ state.xray=null; }
+  updateSolarCard();
   buildSolarCharts();
 }
 
@@ -1022,14 +686,14 @@ function buildBrief(){
     ${['🌍 Earth','🌦 Atmosphere','🌊 Oceans','🌋 Geology','☀ Space Weather'].map((t,i)=>{
       const bodies=[
         w?`Reference station (Tokyo): ${deg(w.current.temperature_2m)}, wind ${w.current.wind_speed_10m} km/h, pressure ${w.current.pressure_msl} hPa.`:'Reference weather unavailable.',
-        w?`Humidity ${w.current.relative_humidity_2m}%, AQI ${state.aq?.current?.us_aqi??'unavailable'}.`:'Atmospheric dataset partial.',
+        w?`Humidity ${w.current.relative_humidity_2m}%, AQI ${state.aq?.current?.us_aqi??'unavailable'}. Global anomaly: ${state.temp?((state.temp.anomaly>=0?'+':'')+state.temp.anomaly.toFixed(2)+' °C'):'unavailable'}.`:'Atmospheric dataset partial.',
         'No verified open ocean dataset connected — omitted by design.',
         `${n} events / 24 h · strongest M ${max?fmtMag(max.properties.mag):'—'} · source USGS.`,
-        'No verified solar dataset connected — omitted by design.'];
+        state.kp||state.xray ? `Solar monitoring: Kp ${(()=>{const r=Array.isArray(state.kp)?state.kp.slice(1).filter(x=>Array.isArray(x)&&Number.isFinite(Number(x[1]))).at(-1):null; return r?Number(r[1]).toFixed(1):'—';})()} · GOES X-ray ${(()=>{const r=Array.isArray(state.xray)?state.xray.filter(x=>x&&x.energy==='0.1-0.8nm'&&Number.isFinite(Number(x.flux))).at(-1):null; return r?solarClassFromFlux(r.flux):'—';})()}.` : 'Solar activity dataset unavailable.'];
       const unavail=[false,false,true,false,true][i];
       return `<div class="glass rounded-lg p-4 ${unavail?'opacity-70':''}"><div class="text-sm mb-1">${t}</div><p class="text-[12px] ${unavail?'text-warn':'text-mut'}">${bodies[i]}</p></div>`;}).join('')}
   </div>
-  <div class="glass-soft rounded-lg p-4 text-[11px] text-mut num">DATA SOURCES: USGS EARTHQUAKE FEEDS (LIVE) · OPEN-METEO (LIVE) · NO ESTIMATED OR SYNTHETIC VALUES INCLUDED</div>`;
+  <div class="glass-soft rounded-lg p-4 text-[11px] text-mut num">DATA SOURCES: USGS · OPEN-METEO · NOAA NCEI GLOBAL TEMPERATURE · NOAA SWPC · GDACS. OBSERVED/REPORTED DATA ONLY.</div>`;
 }
 
 /* ═══════ Sources table ═══════ */
@@ -1041,9 +705,9 @@ function buildSources(){
     ['Weather · current & history','Open-Meteo Forecast API','Hourly',st('meteo'),ft('meteo')],
     ['Air quality · AQI / PM','Open-Meteo Air Quality API','Hourly',st('aq'),ft('aq')],
     ['Geocoding / search','Open-Meteo Geocoding','On demand',st('geo'),ft('geo')],
-    ['Global temperature anomaly','— (no free verified API)','—','<span class="text-warn">UNAVAILABLE</span>','—'],
-    ['Solar activity / space weather','— (NOAA adapter pending)','—','<span class="text-warn">UNAVAILABLE</span>','—'],
-    ['Tropical storms / cyclones','— (no reliable free API)','—','<span class="text-warn">UNAVAILABLE</span>','—'],
+    ['Global temperature anomaly','NOAA NCEI Climate at a Glance','YTD / monthly release',st('temp'),ft('temp')],
+    ['Solar activity / space weather','NOAA SWPC Kp + GOES X-ray','Near real-time',st('kp'),ft('kp')],
+    ['Tropical storms / cyclones','GDACS Tropical Cyclone feed','~6 min',st('storms'),ft('storms')],
   ].map(r=>`<tr>${r.map((c,i)=>`<td class="px-4 py-3 ${i===0?'text-slate-200':'text-mut'}">${c}</td>`).join('')}</tr>`).join('');
 }
 
@@ -1107,50 +771,129 @@ function closeRegion(){ const M=$('#regionModal'); M.classList.add('hidden'); M.
 /* ═══════ GLOBE ═══════ */
 let globe, scene, camera, renderer, globeGroup, ready=false, autoRotate=true, dragging=false, px=0, py=0;
 function initGlobe(){
-  if(ready) return; ready=true;
+  if(ready) return;
+  if(typeof THREE==='undefined'){ globeError?.('three.js did not load (check CDN access)'); return; }
+  if(typeof ThreeGlobe==='undefined'){ globeError?.('three-globe did not load (check CDN access)'); return; }
+
   const wrap=$('#globeWrap');
-  scene=new THREE.Scene();
-  camera=new THREE.PerspectiveCamera(45, wrap.clientWidth/wrap.clientHeight, 1, 4000);
-  camera.position.z=340;
-  renderer=new THREE.WebGLRenderer({antialias:true, alpha:true});
-  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-  renderer.setSize(wrap.clientWidth,wrap.clientHeight);
-  wrap.appendChild(renderer.domElement);
-  globeGroup=new THREE.Group(); scene.add(globeGroup);
-  globe=new ThreeGlobe()
-    .globeImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-blue-marble.jpg')
-    .bumpImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-topology.png')
-    .showAtmosphere(true).atmosphereColor('#3aa8ff').atmosphereAltitude(0.22)
-    .pointLat('lat').pointLng('lon').pointColor('color').pointAltitude('alt').pointRadius('r')
-    .pointLabel('label').onPointClick(p=>{ focusGlobe(p.lat,p.lon); openRegion(p.lat,p.lon,p.place); });
-  globeGroup.add(globe);
-  addOrbitalLayer();
-  // atmosphere glow shell
-  const glowMat=new THREE.ShaderMaterial({transparent:true,side:THREE.BackSide,
-    vertexShader:'varying vec3 vN; void main(){ vN=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
-    fragmentShader:'varying vec3 vN; void main(){ float i=pow(0.72-dot(vN,vec3(0,0,1.0)),2.2); gl_FragColor=vec4(0.3,0.65,1.0,1.0)*i; }'});
-  globeGroup.add(new THREE.Mesh(new THREE.SphereGeometry(100*1.22,64,64),glowMat));
-  // stars
-  const sg=new THREE.BufferGeometry(); const sp=[];
-  for(let i=0;i<1800;i++){ const r=1600+Math.random()*600, t=Math.random()*Math.PI*2, p=Math.acos(2*Math.random()-1);
-    sp.push(r*Math.sin(p)*Math.cos(t), r*Math.sin(p)*Math.sin(t), r*Math.cos(p)); }
-  sg.setAttribute('position',new THREE.Float32BufferAttribute(sp,3));
-  scene.add(new THREE.Points(sg,new THREE.PointsMaterial({color:0x88aacc,size:1.4,transparent:true,opacity:.7})));
-  // interaction
-  const el=renderer.domElement;
-  el.addEventListener('pointerdown',e=>{dragging=true;px=e.clientX;py=e.clientY;});
-  window.addEventListener('pointerup',()=>dragging=false);
-  window.addEventListener('pointermove',e=>{ if(!dragging)return;
-    globeGroup.rotation.y+=(e.clientX-px)*0.004; globeGroup.rotation.x=Math.max(-1,Math.min(1,globeGroup.rotation.x+(e.clientY-py)*0.003)); px=e.clientX;py=e.clientY; });
-  el.addEventListener('wheel',e=>{ e.preventDefault(); camera.position.z=Math.max(160,Math.min(700,camera.position.z+e.deltaY*0.35)); },{passive:false});
-  new ResizeObserver(()=>{ const w=wrap.clientWidth,h=wrap.clientHeight; camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h); }).observe(wrap);
-  $('#globeLoading').style.display='none';
-  updateGlobePoints();
-  (function tick(){ requestAnimationFrame(tick);
-    if(autoRotate && !dragging && !state.settings.motion) globeGroup.rotation.y+=0.0011;
-    if(issRing && !state.iss){ const t=Date.now()/120000; const lambda=t%(Math.PI*2); const lat=Math.asin(Math.sin(ISS_INCLINATION)*Math.sin(lambda))*180/Math.PI; const lon=lambda*180/Math.PI-180; updateISSMarker(lat,lon); }
-    renderer.render(scene,camera); })();
+  if(!wrap || wrap.clientWidth<10 || wrap.clientHeight<10){
+    const loading=$('#globeLoading');
+    if(loading) loading.innerHTML='<div class="label mt-2">WAITING FOR GLOBE CONTAINER…</div>';
+    setTimeout(()=>{ if(!ready) initGlobe(); },500);
+    return;
+  }
+
+  try{
+    scene=new THREE.Scene();
+    camera=new THREE.PerspectiveCamera(45,wrap.clientWidth/wrap.clientHeight,1,4000);
+    camera.position.z=340;
+
+    renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+    renderer.setSize(wrap.clientWidth,wrap.clientHeight);
+    wrap.appendChild(renderer.domElement);
+
+    globeGroup=new THREE.Group();
+    scene.add(globeGroup);
+
+    globe=new ThreeGlobe()
+      .globeImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-blue-marble.jpg')
+      .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
+      .showAtmosphere(true)
+      .atmosphereColor('#3aa8ff')
+      .atmosphereAltitude(0.22);
+    globeGroup.add(globe);
+
+    addOrbitalLayer();
+
+    const glowMat=new THREE.ShaderMaterial({
+      transparent:true,
+      side:THREE.BackSide,
+      vertexShader:'varying vec3 vN; void main(){ vN=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+      fragmentShader:'varying vec3 vN; void main(){ float i=pow(0.72-dot(vN,vec3(0,0,1.0)),2.2); gl_FragColor=vec4(0.3,0.65,1.0,1.0)*i; }'
+    });
+    globeGroup.add(new THREE.Mesh(new THREE.SphereGeometry(100*1.22,64,64),glowMat));
+
+    const sg=new THREE.BufferGeometry();
+    const sp=[];
+    for(let i=0;i<1800;i++){
+      const r=1600+Math.random()*600;
+      const t=Math.random()*Math.PI*2;
+      const p=Math.acos(2*Math.random()-1);
+      sp.push(r*Math.sin(p)*Math.cos(t),r*Math.sin(p)*Math.sin(t),r*Math.cos(p));
+    }
+    sg.setAttribute('position',new THREE.Float32BufferAttribute(sp,3));
+    scene.add(new THREE.Points(sg,new THREE.PointsMaterial({
+      color:0x88aacc,size:1.4,transparent:true,opacity:.7
+    })));
+
+    let dragDist=0;
+    const el=renderer.domElement;
+    el.style.touchAction='none';
+
+    el.addEventListener('pointerdown',e=>{
+      dragging=true; dragDist=0; px=e.clientX; py=e.clientY;
+      el.setPointerCapture?.(e.pointerId);
+    });
+    el.addEventListener('pointermove',e=>{
+      if(!dragging) return;
+      dragDist+=Math.hypot(e.clientX-px,e.clientY-py);
+      globeGroup.rotation.y+=(e.clientX-px)*0.004;
+      globeGroup.rotation.x=Math.max(-1,Math.min(1,globeGroup.rotation.x+(e.clientY-py)*0.003));
+      px=e.clientX; py=e.clientY;
+    });
+    el.addEventListener('pointerup',e=>{
+      const wasClick=dragDist<6;
+      dragging=false;
+      el.releasePointerCapture?.(e.pointerId);
+      if(wasClick) handleGlobeClick(e);
+    });
+    el.addEventListener('pointercancel',()=>{dragging=false;});
+    el.addEventListener('wheel',e=>{
+      e.preventDefault();
+      camera.position.z=Math.max(160,Math.min(700,camera.position.z+e.deltaY*.35));
+    },{passive:false});
+
+    new ResizeObserver(()=>{
+      const w=wrap.clientWidth,h=wrap.clientHeight;
+      if(!w||!h||!camera||!renderer) return;
+      camera.aspect=w/h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w,h);
+    }).observe(wrap);
+
+    ready=true;
+    const loading=$('#globeLoading');
+    if(loading) loading.style.display='none';
+
+    updateGlobePoints();
+
+    (function tick(){
+      requestAnimationFrame(tick);
+      if(autoRotate && !dragging && !state.settings.motion) globeGroup.rotation.y+=0.0011;
+      if(issRing && !state.iss){
+        const t=Date.now()/120000;
+        const lambda=t%(Math.PI*2);
+        const lat=Math.asin(Math.sin(ISS_INCLINATION)*Math.sin(lambda))*180/Math.PI;
+        const lon=lambda*180/Math.PI-180;
+        updateISSMarker(lat,lon);
+      }
+      renderer.render(scene,camera);
+    })();
+  }catch(e){
+    console.error('[Globe] initialization failed:',e);
+    ready=false;
+    if(renderer?.domElement?.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
+    renderer=null; camera=null; scene=null; globe=null; globeGroup=null;
+    const loading=$('#globeLoading');
+    if(loading){
+      loading.style.display='flex';
+      loading.innerHTML='<div class="text-danger text-[12px] max-w-xs text-center px-4">⚠ Globe failed to initialize. Check WebGL/CDN access.</div><button id="retryGlobe" class="btn chip mt-2">RETRY</button>';
+      $('#retryGlobe').onclick=()=>initGlobe();
+    }
+  }
 }
+
 let issObj=null, issRing=null, issGlow=null;
 const ISS_ALT_FRAC=0.064;
 const ISS_INCLINATION=51.6*Math.PI/180;
@@ -1217,7 +960,17 @@ document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   const v=b.dataset.view;
   document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
   $('#view-'+v).classList.add('active');
-  if(v==='overview'){ requestAnimationFrame(()=>{ if(!ready) initGlobe(); const w=$('#globeWrap'); if(ready){renderer.setSize(w.clientWidth,w.clientHeight);} }); }
+  if(v==='overview'){
+  requestAnimationFrame(()=>{
+    if(!ready) initGlobe();
+    const w=$('#globeWrap');
+    if(ready && renderer && camera && w.clientWidth>0 && w.clientHeight>0){
+      camera.aspect=w.clientWidth/w.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w.clientWidth,w.clientHeight);
+    }
+  });
+}
   if(v==='analytics'){ requestAnimationFrame(()=>{ buildAnalytics(); buildSolarCharts(); }); }
   if(v==='sources') buildSources();
   $('#sidebar').classList.add('-translate-x-full'); $('#scrim').classList.add('hidden');
@@ -1253,14 +1006,24 @@ $('#motionBtn').onclick=()=>{state.settings.motion=!state.settings.motion;applyS
 $('#rotBtn').onclick=()=>{state.settings.rotate=!state.settings.rotate;applySettings();};
 $('#refreshSel').onchange=e=>{state.settings.refresh=+e.target.value;applySettings();startRefresh();};
 let refreshInt;
-function startRefresh(){ clearInterval(refreshInt); refreshInt=setInterval(loadQuakes, state.settings.refresh); }
-$('#refreshBtn').onclick=()=>{ $('#refreshIcon').style.display='inline-block'; Promise.all([loadQuakes(),loadSolar()]).finally(()=>setTimeout(()=>$('#refreshIcon').style.display='',800)); };
+function startRefresh(){
+  clearInterval(refreshInt);
+  refreshInt=setInterval(()=>{
+    loadQuakes();
+    loadSolar();
+    loadGlobalTemp();
+    loadStorms();
+  }, state.settings.refresh);
+}
+$('#refreshBtn').onclick=()=>{ $('#refreshIcon').style.display='inline-block'; Promise.all([loadQuakes(),loadSolar(),loadGlobalTemp(),loadStorms()]).finally(()=>{ buildSources(); setTimeout(()=>$('#refreshIcon').style.display='',800); }); };
+
+window.addEventListener('error',e=>console.error('[EarthPulse] Runtime error:',e.error||e.message));
+window.addEventListener('unhandledrejection',e=>console.error('[EarthPulse] Promise error:',e.reason));
 
 /* ═══════ BOOT ═══════ */
-applySettings(); startRefresh(); loadQuakes(); loadWeather(); loadSolar(); buildSources();
+applySettings(); startRefresh(); loadQuakes(); loadWeather(); loadSolar(); loadGlobalTemp(); loadStorms(); buildSources();
 const globeObs=new IntersectionObserver(en=>{ en.forEach(x=>{ if(x.isIntersecting && !ready) initGlobe(); }); },{threshold:.1});
 globeObs.observe($('#globeWrap'));
-initGlobe();
 </script>
 </body>
 </html>
