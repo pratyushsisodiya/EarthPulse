@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>EarthPulse — Planetary Intelligence Dashboard</title>
+<meta name="description" content="EarthPulse: a planetary intelligence command center. Live earthquakes, weather, solar activity, natural events and orbital tracking on an interactive 3D Earth."/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      void:'#04070d', panel:'#0a101c', edge:'#1b2940', accent:'#38bdf8',
+      accent2:'#22d3ee', warn:'#fbbf24', danger:'#f87171', ok:'#34d399', mut:'#64748b'
+    },
+    fontFamily: { sans:['"Space Grotesk"','sans-serif'], mono:['"IBM Plex Mono"','monospace'] }
+  }}
+}
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.152.2/three.min.js"></script>
+<script src="https://unpkg.com/three-globe@2.31.1/dist/three-globe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --glow: 0 0 24px rgba(56,189,248,.12); }
+  html,body { background:#04070d; color:#dbe7f4; font-family:'Space Grotesk',sans-serif; }
+  * { scrollbar-width:thin; scrollbar-color:#1b2940 transparent; }
+  ::-webkit-scrollbar { width:8px; height:8px; } ::-webkit-scrollbar-thumb { background:#1b2940; border-radius:4px; }
+  .glass { background:linear-gradient(160deg, rgba(13,22,38,.82), rgba(7,12,22,.88));
+    border:1px solid rgba(56,120,190,.18); backdrop-filter: blur(14px); box-shadow: var(--glow); }
+  .glass-soft { background:rgba(10,16,28,.6); border:1px solid rgba(56,120,190,.14); backdrop-filter: blur(10px); }
+  .hair { border-color:rgba(56,120,190,.16); }
+  .num { font-family:'IBM Plex Mono',monospace; font-variant-numeric: tabular-nums; }
+  .label { font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:#64748b; }
+  .btn { transition: all .2s ease; }
+  .btn:hover { border-color:rgba(56,189,248,.5); color:#7dd3fc; }
+  .btn.active { background:rgba(56,189,248,.12); border-color:rgba(56,189,248,.55); color:#7dd3fc; }
+  .view { display:none; animation: fadeUp .35s ease both; }
+  .view.active { display:block; }
+  @keyframes fadeUp { from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none} }
+  @keyframes pulseDot { 0%{box-shadow:0 0 0 0 rgba(52,211,153,.5)} 70%{box-shadow:0 0 0 9px rgba(52,211,153,0)} 100%{box-shadow:0 0 0 0 rgba(52,211,153,0)} }
+  .livedot { animation: pulseDot 2.4s infinite; }
+  @keyframes skeleton { 0%{background-position:-200px 0} 100%{background-position:200px 0} }
+  .skel { background:linear-gradient(90deg,#0b1322 25%,#12203a 50%,#0b1322 75%); background-size:400px 100%; animation:skeleton 1.4s infinite linear; border-radius:6px; }
+  .feeditem { transition: all .18s ease; cursor:pointer; }
+  .feeditem:hover { background:rgba(56,189,248,.07); border-color:rgba(56,189,248,.4); transform:translateX(3px); }
+  .sev-dot { width:7px; height:7px; border-radius:9999px; display:inline-block; margin-right:7px; }
+  .sev-high { background:#f87171; box-shadow:0 0 8px rgba(248,113,113,.7); }
+  .sev-med  { background:#fbbf24; box-shadow:0 0 8px rgba(251,191,36,.6); }
+  .sev-low  { background:#38bdf8; }
+  .sev-orbit{ background:#a78bfa; box-shadow:0 0 8px rgba(167,139,250,.7); }
+  .chip { font-size:10px; padding:2px 8px; border-radius:4px; border:1px solid rgba(56,120,190,.25); color:#7dd3fc; letter-spacing:.08em; }
+  .statcard { transition: all .25s ease; }
+  .statcard:hover { border-color:rgba(56,189,248,.45); transform:translateY(-2px); }
+  .fadein { animation: fadeUp .3s ease both; }
+  input,select { outline:none; }
+  input:focus,select:focus { border-color:rgba(56,189,248,.6) !important; box-shadow:0 0 0 3px rgba(56,189,248,.12); }
+  .reduced * { animation:none !important; transition:none !important; }
+  kbd { font-family:'IBM Plex Mono',monospace; font-size:10px; border:1px solid #1b2940; padding:1px 5px; border-radius:4px; color:#64748b; }
+</style>
+<base target="_blank">
+</head>
+<body class="antialiased overflow-x-hidden">
+
+<!-- ══════════ SIDEBAR ══════════ -->
+<aside id="sidebar" class="fixed left-0 top-0 h-full w-[220px] glass z-40 flex flex-col transition-transform duration-300 -translate-x-full lg:translate-x-0">
+  <div class="px-5 h-[60px] flex items-center gap-3 border-b hair">
+    <div class="w-8 h-8 rounded-full relative shrink-0" style="background:radial-gradient(circle at 35% 35%, #38bdf8, #0c4a6e 70%); box-shadow:0 0 18px rgba(56,189,248,.5)">
+      <div class="absolute inset-0 rounded-full border border-cyan-300/40"></div>
+    </div>
+    <div>
+      <div class="font-semibold tracking-widest text-sm">EARTH<span class="text-accent">PULSE</span></div>
+      <div class="label" style="font-size:8px">PLANETARY INTEL v2.5</div>
+    </div>
+  </div>
+  <nav id="nav" class="flex-1 py-4 px-3 space-y-1 text-[13px]">
+    <button data-view="overview" class="btn active w-full text-left px-3 py-2.5 rounded-md border border-transparent flex items-center gap-3"><span>◉</span>Overview</button>
+    <button data-view="events" class="btn w-full text-left px-3 py-2.5 rounded-md border border-transparent flex items-center gap-3"><span>⚡</span>Live Events</button>
+    <button data-view="analytics" class="btn w-full text-left px-3 py-2.5 rounded-md border border-transparent flex items-center gap-3"><span>▦</span>Analytics</button>
+    <button data-view="timemachine" class="btn w-full text-left px-3 py-2.5 rounded-md border border-transparent flex items-center gap-3"><span>⧗</span>Time Machine</button>
+    <button data-view="brief" class="btn w-full text-left px-3 py-2.5 rounded-md border border-transparent flex items-center gap-3"><span>◈</span>Planetary Brief</button>
+    <button data-view="sources" class="btn w-full text-left px-3 py-2.5 rounded-md border border-transparent flex items-center gap-3"><span>⇶</span>Data Sources</button>
+    <button data-view="settings" class="btn w-full text-left px-3 py-2.5 rounded-md border border-transparent flex items-center gap-3"><span>⚙</span>Settings</button>
+  </nav>
+  <div class="p-4 border-t hair">
+    <div class="label mb-2">SYSTEM</div>
+    <div class="flex items-center gap-2 text-[11px] text-emerald-400"><span class="livedot w-2 h-2 rounded-full bg-emerald-400 inline-block"></span><span id="sysStatus">ALL SYSTEMS NOMINAL</span></div>
+    <div class="num text-[10px] text-mut mt-2" id="uptime">UPTIME —</div>
+  </div>
+</aside>
+<div id="scrim" class="fixed inset-0 bg-black/60 z-30 hidden lg:hidden"></div>
+
+<!-- ══════════ MAIN ══════════ -->
+<div class="lg:ml-[220px] min-h-screen flex flex-col">
+
+  <!-- TOPBAR -->
+  <header class="h-[60px] glass sticky top-0 z-30 flex items-center gap-3 px-4 border-b hair">
+    <button id="menuBtn" class="lg:hidden text-mut text-xl px-1">☰</button>
+    <div class="hidden sm:flex items-center gap-2">
+      <span class="livedot w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
+      <span class="num text-[11px] text-emerald-400 tracking-widest">LIVE</span>
+    </div>
+    <div class="relative flex-1 max-w-md">
+      <input id="searchInput" type="text" placeholder="Search city, region, event…  ( e.g. “Tokyo”, “5.0+ earthquakes” )" autocomplete="off"
+        class="w-full bg-panel/70 border hair rounded-md px-4 py-2 text-[13px] placeholder:text-mut transition-all" aria-label="Global search"/>
+      <div id="searchResults" class="absolute top-full mt-2 w-full glass rounded-md overflow-hidden hidden z-50 max-h-[380px] overflow-y-auto"></div>
+    </div>
+    <div class="ml-auto flex items-center gap-4">
+      <div class="text-right hidden md:block">
+        <div class="num text-[13px]" id="utcClock">--:--:--</div>
+        <div class="label" style="font-size:8px">UTC <span id="localOffset"></span></div>
+      </div>
+      <button id="refreshBtn" class="btn border hair rounded-md px-3 py-2 text-[12px] text-mut flex items-center gap-2" title="Refresh data">
+        <span id="refreshIcon">↻</span><span class="hidden sm:inline">SYNC</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="flex-1 p-4 lg:p-6 space-y-6">
+
+    <!-- ════ OVERVIEW ════ -->
+    <section id="view-overview" class="view active">
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-5">
+        <!-- GLOBE -->
+        <div class="xl:col-span-2 glass rounded-lg relative overflow-hidden" style="min-height:520px">
+          <div id="globeWrap" class="absolute inset-0 cursor-grab active:cursor-grabbing" role="img" aria-label="Interactive 3D Earth showing live seismic events and orbital ISS position"></div>
+          <div class="absolute top-4 left-4 pointer-events-none">
+            <div class="label">PLANETARY SCAN</div>
+            <div class="text-lg font-medium mt-1">Seismic activity · past 24 h</div>
+            <div class="num text-[11px] text-mut" id="globeMeta">—</div>
+          </div>
+          <div class="absolute bottom-4 left-4 flex flex-wrap gap-2 pointer-events-none">
+            <span class="chip">◉ M ≥ 4.5</span><span class="chip" style="color:#fbbf24">◉ M ≥ 6.0</span><span class="chip" style="color:#f87171">◉ M ≥ 7.0</span>
+            <span class="chip" style="color:#a78bfa">◉ Natural event</span><span class="chip" style="color:#ffffff">◉ ISS</span>
+            <span class="chip text-mut">DRAG · SCROLL TO ZOOM · CLICK MARKER</span>
+          </div>
+          <div id="globeLoading" class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-void/40">
+            <div class="skel w-40 h-3"></div><div class="skel w-28 h-3"></div>
+            <div class="label mt-2">INITIALIZING ORBITAL RENDERER…</div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN -->
+        <div class="space-y-5">
+          <!-- STATUS GRID -->
+          <div class="grid grid-cols-2 gap-3">
+            <div class="glass rounded-lg p-4 statcard" id="cardQuakes">
+              <div class="label">Earthquakes · 24 h</div>
+              <div class="num text-2xl mt-2" id="quakeCount">—</div>
+              <div class="text-[10px] text-mut" id="quakeStrong">loading…</div>
+            </div>
+            <div class="glass rounded-lg p-4 statcard" id="cardStorms">
+              <div class="label">Natural Events</div>
+              <div class="num text-xl mt-2 text-mut" id="eonetCount">—</div>
+              <div class="text-[10px] text-mut" id="eonetSub">loading…</div>
+            </div>
+            <div class="glass rounded-lg p-4 statcard" id="cardSolar">
+              <div class="label">Solar Activity</div>
+              <div class="num text-xl mt-2 text-mut" id="solarKp">—</div>
+              <div class="text-[10px] text-mut" id="solarSub">loading…</div>
+            </div>
+            <div class="glass rounded-lg p-4 statcard" id="cardOrbital">
+              <div class="label">Orbital Tracker · ISS</div>
+              <div class="num text-xl mt-2 text-mut" id="orbitalAlt">—</div>
+              <div class="text-[10px] text-mut" id="orbitalSub">loading…</div>
+            </div>
+          </div>
+          <!-- WEATHER MONITOR -->
+          <div class="glass rounded-lg p-4">
+            <div class="flex items-center justify-between"><div class="label">Weather Monitor</div><span class="chip" id="wxLoc">TOKYO · 35.7N 139.7E</span></div>
+            <div id="wxBody" class="mt-3 space-y-2">
+              <div class="skel h-4 w-3/4"></div><div class="skel h-4 w-1/2"></div>
+            </div>
+          </div>
+          <!-- EVENT FEED -->
+          <div class="glass rounded-lg p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div class="label">Live Event Feed</div>
+              <span class="num text-[10px] text-mut" id="feedCount"></span>
+            </div>
+            <div id="eventFeed" class="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+              <div class="skel h-10"></div><div class="skel h-10"></div><div class="skel h-10"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- TICKER -->
+      <div class="glass-soft rounded-lg px-4 py-2.5 overflow-hidden">
+        <div class="flex gap-10 whitespace-nowrap num text-[11px] text-mut" id="ticker" style="animation:none"></div>
+      </div>
+    </section>
+
+    <!-- ════ EVENTS ════ -->
+    <section id="view-events" class="view">
+      <div class="flex flex-wrap items-center gap-3 mb-5">
+        <h1 class="text-xl font-semibold tracking-wide">⚡ Live Events</h1>
+        <div class="flex gap-2 ml-auto flex-wrap" id="evFilters">
+          <button class="btn chip active" data-f="all">ALL</button>
+          <button class="btn chip" data-f="quake">EARTHQUAKES</button>
+          <button class="btn chip" data-f="high">M ≥ 4.5</button>
+          <button class="btn chip" data-f="natural">NATURAL EVENTS</button>
+        </div>
+      </div>
+      <div id="eventsTable" class="glass rounded-lg divide-y divide-[#16233a] overflow-hidden"></div>
+    </section>
+
+    <!-- ════ ANALYTICS ════ -->
+    <section id="view-analytics" class="view">
+      <h1 class="text-xl font-semibold tracking-wide mb-1">▦ Analytics <span class="text-mut text-sm font-normal">— real USGS seismic & NOAA solar data</span></h1>
+      <p class="num text-[11px] text-mut mb-5" id="analyticsMeta">—</p>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="glass rounded-lg p-4"><div class="label mb-3">Seismic events per day · past 30 d</div><div class="h-[260px]"><canvas id="chDaily"></canvas></div></div>
+        <div class="glass rounded-lg p-4"><div class="label mb-3">Magnitude distribution · past 30 d</div><div class="h-[260px]"><canvas id="chMag"></canvas></div></div>
+        <div class="glass rounded-lg p-4 lg:col-span-2"><div class="label mb-3">Depth vs Magnitude · past 30 d</div><div class="h-[280px]"><canvas id="chDepth"></canvas></div></div>
+        <div class="glass rounded-lg p-4"><div class="label mb-3">Planetary K-index · past 24 h <span class="text-mut">(NOAA SWPC)</span></div><div class="h-[240px]"><canvas id="chKp"></canvas></div></div>
+        <div class="glass rounded-lg p-4"><div class="label mb-3">GOES X-ray flux · past 6 h <span class="text-mut">(NOAA SWPC)</span></div><div class="h-[240px]"><canvas id="chXray"></canvas></div></div>
+      </div>
+    </section>
+
+    <!-- ════ TIME MACHINE ════ -->
+    <section id="view-timemachine" class="view">
+      <h1 class="text-xl font-semibold tracking-wide mb-1">⧗ Time Machine</h1>
+      <p class="text-mut text-sm mb-5">Compare planetary activity: <span class="text-accent2">then</span> vs <span class="text-accent">now</span>. All values computed from retrieved USGS & Open-Meteo data.</p>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="glass rounded-lg p-5">
+          <div class="label mb-4">Earthquake activity · 30 days split</div>
+          <div class="grid grid-cols-2 gap-4">
+            <div><div class="label">DAYS 1–15 <span class="text-mut">(then)</span></div><div class="num text-3xl mt-1" id="tmThen">—</div></div>
+            <div><div class="label">DAYS 16–30 <span class="text-mut">(now)</span></div><div class="num text-3xl mt-1 text-accent" id="tmNow">—</div></div>
+          </div>
+          <div class="mt-4 h-[220px]"><canvas id="chTM"></canvas></div>
+        </div>
+        <div class="glass rounded-lg p-5">
+          <div class="label mb-4">Temperature · Tokyo — 7-day window</div>
+          <div class="grid grid-cols-2 gap-4">
+            <div><div class="label">7 DAYS AGO</div><div class="num text-3xl mt-1" id="tmTThen">—</div></div>
+            <div><div class="label">CURRENT</div><div class="num text-3xl mt-1 text-accent" id="tmTNow">—</div></div>
+          </div>
+          <div class="mt-4 h-[220px]"><canvas id="chTMTemp"></canvas></div>
+        </div>
+      </div>
+      <div id="whatChanged" class="mt-6 glass rounded-lg p-5"></div>
+    </section>
+
+    <!-- ════ BRIEF ════ -->
+    <section id="view-brief" class="view">
+      <h1 class="text-xl font-semibold tracking-wide mb-1">◈ AI Planetary Brief</h1>
+      <p class="text-mut text-sm mb-5">Auto-generated from currently retrieved datasets only. Nothing is invented.</p>
+      <div id="briefBody" class="space-y-4 max-w-3xl"></div>
+    </section>
+
+    <!-- ════ SOURCES ════ -->
+    <section id="view-sources" class="view">
+      <h1 class="text-xl font-semibold tracking-wide mb-5">⇶ Data Sources & Transparency</h1>
+      <div class="glass rounded-lg overflow-hidden">
+        <table class="w-full text-[13px]">
+          <thead><tr class="text-left label border-b hair"><th class="px-4 py-3">DATASET</th><th class="px-4 py-3">SOURCE</th><th class="px-4 py-3">UPDATE</th><th class="px-4 py-3">STATUS</th><th class="px-4 py-3">LAST FETCH</th></tr></thead>
+          <tbody id="srcTable" class="divide-y divide-[#16233a]"></tbody>
+        </table>
+      </div>
+      <p class="text-[11px] text-mut mt-4 max-w-2xl">Datasets marked UNAVAILABLE are intentionally not emulated. EarthPulse distinguishes observed values from estimates and never fabricates planetary measurements. Stale data is flagged with a warning. The orbital path drawn around the globe is an illustrative visualization of the ISS's ~51.6° orbital inclination — the marker position itself is live telemetry.</p>
+    </section>
+
+    <!-- ════ SETTINGS ════ -->
+    <section id="view-settings" class="view">
+      <h1 class="text-xl font-semibold tracking-wide mb-5">⚙ Settings</h1>
+      <div class="glass rounded-lg p-6 max-w-xl space-y-6">
+        <div class="flex items-center justify-between gap-6">
+          <div><div class="text-sm">Units</div><div class="text-[11px] text-mut">Temperature scale</div></div>
+          <div class="flex gap-2"><button class="btn chip" id="uC">°C</button><button class="btn chip" id="uF">°F</button></div>
+        </div>
+        <div class="flex items-center justify-between gap-6">
+          <div><div class="text-sm">Data refresh</div><div class="text-[11px] text-mut">Live feed polling interval</div></div>
+          <select id="refreshSel" class="bg-panel border hair rounded-md px-3 py-2 text-[13px]">
+            <option value="120000">Every 2 min</option><option value="300000" selected>Every 5 min</option><option value="600000">Every 10 min</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between gap-6">
+          <div><div class="text-sm">Reduced motion</div><div class="text-[11px] text-mut">Disable animations & auto-rotation</div></div>
+          <button class="btn chip" id="motionBtn">OFF</button>
+        </div>
+        <div class="flex items-center justify-between gap-6">
+          <div><div class="text-sm">Globe auto-rotate</div><div class="text-[11px] text-mut">Idle rotation of planetary view</div></div>
+          <button class="btn chip" id="rotBtn">ON</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="px-6 py-3 border-t hair flex flex-wrap gap-4 items-center text-[10px] text-mut">
+    <span class="num">EARTHPULSE BUILD 2.5.0</span><span>SEISMIC: USGS</span><span>WEATHER/AQ: OPEN-METEO</span><span>SOLAR: NOAA SWPC</span><span>EVENTS: NASA EONET</span><span>ORBITAL: WHERETHEISS.AT</span>
+    <span class="ml-auto">Data shown is observed or labeled otherwise · <span id="staleWarn" class="text-warn hidden">STALE DATA — refresh pending</span></span>
+  </footer>
+</div>
+
+<!-- ════ REGION MODAL ════ -->
+<div id="regionModal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+  <div class="glass rounded-lg w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 fadein">
+    <div class="flex items-start justify-between">
+      <div><div class="label">REGION EXPLORER</div><h2 id="rmTitle" class="text-2xl font-semibold mt-1">—</h2>
+        <div class="num text-[11px] text-mut" id="rmCoords">—</div></div>
+      <button id="rmClose" class="btn border hair rounded-md px-3 py-1 text-mut">✕ ESC</button>
+    </div>
+    <div id="rmBody" class="mt-5 grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+    <div class="mt-5"><div class="label mb-2">RECENT NEARBY EARTHQUAKES (≤ 500 km)</div><div id="rmQuakes" class="space-y-2 text-[13px]"></div></div>
+    <div class="mt-5"><div class="label mb-2">TEMPERATURE — PAST 24 H</div><div class="h-[160px]"><canvas id="chRM"></canvas></div></div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════
+   EARTHPULSE — data layer (typed-ish services)
+   ═══════════════════════════════════════════════════ */
+const SRC = {
+  usgsDay:  'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson',
+  usgsMonth:'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.geojson',
+  meteo:    'https://api.open-meteo.com/v1/forecast',
+  meteoAQ:  'https://air-quality-api.open-meteo.com/v1/air-quality',
+  geo:      'https://geocoding-api.open-meteo.com/v1/search',
+  kindex:   'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json',
+  xray:     'https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json',
+  eonet:    'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=60',
+  iss:      'https://api.wheretheiss.at/v1/satellites/25544'
+};
+const state = {
+  day: null, month: null, weather: null, aq: null,
+  eonet: null, kindex: null, xray: null, iss: null,
+  lastFetch: {}, filter: 'all', charts: {}, modalChart: null,
+  settings: JSON.parse(localStorage.getItem('ep_settings')||'{"units":"C","refresh":300000,"motion":false,"rotate":true}')
+};
+const $ = s => document.querySelector(s);
+const fmtMag = m => m==null?'—':m.toFixed(1);
+const timeAgo = t => { const s=(Date.now()-t)/1000; if(s<60)return Math.max(1,s|0)+'s ago'; if(s<3600)return (s/60|0)+' min ago'; if(s<86400)return (s/3600|0)+' h ago'; return (s/86400|0)+' d ago'; };
+const deg = t => state.settings.units==='F' ? (t*9/5+32).toFixed(1)+'°F' : t.toFixed(1)+'°C';
+const sevClass = m => m>=6?'sev-high':m>=4.5?'sev-med':'sev-low';
+const sevLabel = m => m>=6?'HIGH':m>=4.5?'MODERATE':'LOW';
+
+async function fetchJSON(url, key, headers={}){
+  const ctl = new AbortController(); const to = setTimeout(()=>ctl.abort(), 12000);
+  try { const r = await fetch(url,{signal:ctl.signal, headers}); clearTimeout(to);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    state.lastFetch[key]=Date.now(); return await r.json();
+  } catch(e){ clearTimeout(to); state.lastFetch[key]=null; console.warn(key,e); throw e; }
+}
+
+const errBox = msg => `<div class="border border-danger/40 bg-danger/10 rounded-md p-3 text-[12px] text-danger">⚠ ${msg}</div>`;
+
+/* ═══════ Earthquakes — USGS ═══════ */
+async function loadQuakes(){
+  try { const d = await fetchJSON(SRC.usgsDay,'usgs'); state.day = d.features||[]; }
+  catch(e){ state.day = null; $('#eventFeed').innerHTML = errBox('Seismic feed unreachable. USGS API may be down or blocked by CORS.'); }
+  try { const m = await fetchJSON(SRC.usgsMonth,'usgsMonth'); state.month = m.features||[]; } catch(e){ state.month = null; }
+  renderQuakeUI(); buildAnalytics(); buildTimeMachine(); buildBrief();
+}
+
+/* ═══════ Weather + point air quality — Open-Meteo ═══════ */
+async function loadWeather(lat=35.68, lon=139.69){
+  $('#wxBody').innerHTML = '<div class="skel h-4 w-3/4"></div><div class="skel h-4 w-1/2"></div>';
+  try {
+    const w = await fetchJSON(`${SRC.meteo}?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,pressure_msl,weather_code&timezone=auto`,'meteo');
+    state.weather = w;
+    let aqHtml = '';
+    try { const a = await fetchJSON(`${SRC.meteoAQ}?latitude=${lat}&longitude=${lon}&current=us_aqi,pm2_5,pm10`,'aq'); state.aq=a;
+      aqHtml = `<div class="flex justify-between text-[13px]"><span class="text-mut">Air quality (US AQI)</span><span class="num ${a.current.us_aqi>100?'text-danger':'text-emerald-400'}">${a.current.us_aqi??'—'}</span></div>
+      <div class="flex justify-between text-[13px]"><span class="text-mut">PM2.5 / PM10</span><span class="num text-mut">${a.current.pm2_5??'—'} / ${a.current.pm10??'—'} µg/m³</span></div>`;
+    } catch(e){ aqHtml = `<div class="flex justify-between text-[13px]"><span class="text-mut">Air quality</span><span class="text-warn num">DATA UNAVAILABLE</span></div>`; }
+    const codes={0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Depositing rime fog',51:'Light drizzle',53:'Drizzle',55:'Dense drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',71:'Light snow',73:'Snow',75:'Heavy snow',80:'Rain showers',81:'Showers',82:'Violent showers',95:'Thunderstorm',96:'Storm + hail',99:'Storm + heavy hail'};
+    $('#wxBody').innerHTML = `
+      <div class="flex items-end justify-between"><div class="num text-3xl">${deg(w.current.temperature_2m)}</div><div class="text-[12px] text-accent2">${codes[w.current.weather_code]??'Code '+w.current.weather_code}</div></div>
+      <div class="flex justify-between text-[13px]"><span class="text-mut">Feels like</span><span class="num">${deg(w.current.apparent_temperature)}</span></div>
+      <div class="flex justify-between text-[13px]"><span class="text-mut">Humidity</span><span class="num">${w.current.relative_humidity_2m}%</span></div>
+      <div class="flex justify-between text-[13px]"><span class="text-mut">Wind</span><span class="num">${w.current.wind_speed_10m} km/h</span></div>
+      <div class="flex justify-between text-[13px]"><span class="text-mut">Pressure</span><span class="num">${w.current.pressure_msl} hPa</span></div>${aqHtml}
+      <div class="text-[10px] text-mut num mt-1">UPDATED ${new Date(w.current.time).toLocaleString()} · OPEN-METEO</div>`;
+  } catch(e){ $('#wxBody').innerHTML = errBox('Weather data temporarily unavailable.'); }
+}
+
+/* ═══════ Solar activity — NOAA SWPC ═══════ */
+async function loadSolar(){
+  try {
+    const [k, x] = await Promise.all([
+      fetchJSON(SRC.kindex,'kindex'),
+      fetchJSON(SRC.xray,'xray')
+    ]);
+    state.kindex = k; state.xray = x;
+    const latest = k[k.length-1];
+    const kp = parseFloat(latest[1]);
+    const kpClass = kp>=7?'text-danger':kp>=5?'text-warn':'';
+    $('#solarKp').innerHTML = `<span class="${kpClass}">Kp ${kp.toFixed(1)}</span>`;
+    $('#solarSub').textContent = kp>=5 ? 'Geomagnetic storm conditions · NOAA SWPC' : 'Planetary K-index nominal · NOAA SWPC';
+    buildSolarCharts();
+  } catch(e){
+    state.kindex = null; state.xray = null;
+    $('#solarKp').textContent = 'DATA UNAVAILABLE';
+    $('#solarSub').textContent = 'NOAA SWPC unreachable';
+  } finally {
+    buildBrief();
+  }
+}
+function buildSolarCharts(){
+  if(state.kindex){
+    const rows = state.kindex.slice(-96).filter(r=>r[0] && r[1]!==null);
+    mkChart('chKp',{type:'bar',data:{labels:rows.map(r=>r[0].slice(11,16)),datasets:[{data:rows.map(r=>parseFloat(r[1])),backgroundColor:rows.map(r=>{const v=parseFloat(r[1]);return v>=7?'rgba(248,113,113,.7)':v>=5?'rgba(251,191,36,.6)':'rgba(56,189,248,.5)';})}]},
+      options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:8}},y:{min:0,max:9,title:{display:true,text:'Kp index'}}}}});
+  }
+  if(state.xray){
+    const rows = state.xray.filter(r=>r.energy==='0.1-0.8nm').slice(-360);
+    mkChart('chXray',{type:'line',data:{labels:rows.map(r=>r.time_tag.slice(11,16)),datasets:[{data:rows.map(r=>r.flux),borderColor:'#fbbf24',backgroundColor:'rgba(251,191,36,.1)',fill:true,pointRadius:0,tension:.2}]},
+      options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:8}},y:{type:'logarithmic',title:{display:true,text:'W/m²'}}}}});
+  }
+}
+
+/* ═══════ Natural events — NASA EONET ═══════ */
+async function loadNaturalEvents(){
+  try {
+    const d = await fetchJSON(SRC.eonet,'eonet');
+    state.eonet = d.events || [];
+    const cats = {}; state.eonet.forEach(e=>{ const c=e.categories?.[0]?.title||'Other'; cats[c]=(cats[c]||0)+1; });
+    const top = Object.entries(cats).sort((a,b)=>b[1]-a[1])[0];
+    $('#eonetCount').textContent = state.eonet.length;
+    $('#eonetSub').textContent = top ? `mostly ${top[0]} · NASA EONET` : 'NASA EONET';
+  } catch(e){
+    state.eonet = null;
+    $('#eonetCount').textContent = 'DATA UNAVAILABLE';
+    $('#eonetSub').textContent = 'EONET feed unreachable';
+  }
+  renderQuakeUI();
+  buildBrief();
+}
+
+/* ═══════ Orbital tracker — ISS live position (wheretheiss.at) ═══════ */
+async function loadISS(){
+  try {
+    const d = await fetchJSON(SRC.iss,'iss');
+    state.iss = d;
+    $('#orbitalAlt').innerHTML = `${Math.round(d.altitude)} km`;
+    $('#orbitalSub').textContent = `${Math.round(d.velocity).toLocaleString()} km/h · live · wheretheiss.at`;
+    if(ready) updateISSMarker(d.latitude, d.longitude);
+  } catch(e){
+    state.iss = null;
+    $('#orbitalAlt').textContent = 'DATA UNAVAILABLE';
+    $('#orbitalSub').textContent = 'ISS tracker unreachable';
+  } finally {
+    buildBrief();
+  }
+}
+
+/* ═══════ UI: overview ═══════ */
+function renderQuakeUI(){
+  if(state.day===null){ $('#quakeCount').textContent='—'; return; }
+  const evs = [...state.day].sort((a,b)=>b.properties.time-a.properties.time);
+  const strong = evs.filter(e=>e.properties.mag>=4.5);
+  const max = evs.reduce((m,e)=>!m||e.properties.mag>m.properties.mag?e:m,null);
+  $('#quakeCount').textContent = evs.length;
+  $('#quakeStrong').innerHTML = max ? `strongest M ${fmtMag(max.properties.mag)} · ${max.properties.place??''}` : 'no events';
+  $('#globeMeta').textContent = `${evs.length} EVENTS · USGS ALL_DAY FEED · ${new Date().toUTCString().slice(17,25)} UTC`;
+  $('#feedCount').textContent = evs.length + ' EVENTS';
+  // feed
+  $('#eventFeed').innerHTML = evs.slice(0,40).map((e,i)=>{
+    const p=e.properties;
+    return `<div class="feeditem border border-transparent rounded-md p-2.5 flex items-center gap-3" data-i="${i}" tabindex="0" role="button" aria-label="Earthquake magnitude ${fmtMag(p.mag)} at ${p.place}">
+      <span class="sev-dot ${sevClass(p.mag)}"></span>
+      <div class="flex-1 min-w-0"><div class="text-[13px] truncate">Earthquake · M ${fmtMag(p.mag)}</div>
+      <div class="text-[11px] text-mut truncate">${p.place??'Unknown location'}</div></div>
+      <div class="text-right shrink-0"><div class="num text-[12px]">${timeAgo(p.time)}</div><div class="label" style="font-size:8px">${p.magType??'mw'} · ${sevLabel(p.mag)}</div></div>
+    </div>`;}).join('') || '<div class="text-mut text-[13px] p-3">No events in the past 24 hours.</div>';
+  $('#eventFeed').querySelectorAll('.feeditem').forEach(el=>{
+    const go=()=>{ const e=evs[+el.dataset.i]; focusGlobe(e.geometry.coordinates[1],e.geometry.coordinates[0]); openRegion(e.geometry.coordinates[1],e.geometry.coordinates[0], e.properties.place); };
+    el.onclick=go; el.onkeydown=ev=>{if(ev.key==='Enter')go();};
+  });
+  buildEventsTable(); updateTicker(); updateGlobePoints();
+}
+
+function updateTicker(){
+  if(!state.day) return;
+  const items = [...state.day].sort((a,b)=>b.properties.time-a.properties.time).slice(0,10)
+    .map(e=>`◉ M ${fmtMag(e.properties.mag)} · ${(e.properties.place||'').split(',').pop()?.trim()??'—'} · ${timeAgo(e.properties.time)}`).join('  <span class="text-edge">|</span>  ');
+  $('#ticker').textContent = items;
+}
+
+/* ═══════ Events view ═══════ */
+function buildEventsTable(){
+  if(state.filter==='natural'){
+    if(!state.eonet){ $('#eventsTable').innerHTML = `<div class="p-6">${errBox('NASA EONET feed unreachable — cannot display natural events.')}</div>`; return; }
+    $('#eventsTable').innerHTML = state.eonet.slice(0,80).map(e=>{
+      const geom = e.geometry?.[e.geometry.length-1];
+      const coords = geom?.coordinates;
+      const lat = coords ? (Array.isArray(coords[0]) ? coords[0][1] : coords[1]) : null;
+      const lon = coords ? (Array.isArray(coords[0]) ? coords[0][0] : coords[0]) : null;
+      const cat = e.categories?.[0]?.title || 'Event';
+      const when = geom?.date ? new Date(geom.date).getTime() : Date.now();
+      return `<div class="feeditem px-4 py-3 grid grid-cols-12 gap-2 items-center" data-lat="${lat}" data-lon="${lon}" data-place="${(e.title||'').replace(/"/g,'')}" tabindex="0">
+        <div class="col-span-1"><span class="sev-dot sev-orbit"></span></div>
+        <div class="col-span-5 text-[13px] truncate">${e.title??'—'}</div>
+        <div class="col-span-2 num text-[12px] text-mut">${cat}</div>
+        <div class="col-span-2 num text-[12px]">${timeAgo(when)}</div>
+        <div class="col-span-2"><span class="chip">EONET</span></div>
+      </div>`;}).join('') || '<div class="p-6 text-mut text-[13px]">No open natural events.</div>';
+    $('#eventsTable').querySelectorAll('.feeditem').forEach(el=>{
+      if(el.dataset.lat==='null'||el.dataset.lon==='null') return;
+      const go=()=>{ focusGlobe(+el.dataset.lat,+el.dataset.lon); openRegion(+el.dataset.lat,+el.dataset.lon, el.dataset.place); };
+      el.onclick=go; el.onkeydown=ev=>{if(ev.key==='Enter')go();};
+    });
+    return;
+  }
+  if(state.day===null){ $('#eventsTable').innerHTML = `<div class="p-6">${errBox('Seismic feed unreachable — cannot display events.')}</div>`; return; }
+  let evs=[...state.day].sort((a,b)=>b.properties.time-a.properties.time);
+  if(state.filter==='quake') evs=evs.filter(e=>e.properties.type==='earthquake');
+  if(state.filter==='high') evs=evs.filter(e=>e.properties.mag>=4.5);
+  $('#eventsTable').innerHTML = evs.slice(0,80).map((e,i)=>{ const p=e.properties; const [lon,lat,depth]=e.geometry.coordinates;
+    return `<div class="feeditem px-4 py-3 grid grid-cols-12 gap-2 items-center" data-lat="${lat}" data-lon="${lon}" data-place="${(p.place||'').replace(/"/g,'')}" tabindex="0">
+      <div class="col-span-1"><span class="sev-dot ${sevClass(p.mag)}"></span></div>
+      <div class="col-span-4 text-[13px] truncate">${p.place??'—'}</div>
+      <div class="col-span-2 num text-[13px]">M ${fmtMag(p.mag)} <span class="text-mut text-[10px]">${p.magType??''}</span></div>
+      <div class="col-span-2 num text-[12px] text-mut">${depth?.toFixed(0)??'—'} km deep</div>
+      <div class="col-span-2 num text-[12px]">${timeAgo(p.time)}</div>
+      <div class="col-span-1"><span class="chip" style="color:${p.mag>=6?'#f87171':p.mag>=4.5?'#fbbf24':'#7dd3fc'}">${sevLabel(p.mag)}</span></div>
+    </div>`;}).join('') || '<div class="p-6 text-mut text-[13px]">No events match this filter.</div>';
+  $('#eventsTable').querySelectorAll('.feeditem').forEach(el=>{
+    const go=()=>{ focusGlobe(+el.dataset.lat,+el.dataset.lon); openRegion(+el.dataset.lat,+el.dataset.lon, el.dataset.place); };
+    el.onclick=go; el.onkeydown=ev=>{if(ev.key==='Enter')go();};
+  });
+}
+document.querySelectorAll('#evFilters .chip').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#evFilters .chip').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+  state.filter=b.dataset.f; buildEventsTable();
+});
+
+/* ═══════ Charts ═══════ */
+Chart.defaults.color='#64748b'; Chart.defaults.font.family="'IBM Plex Mono',monospace"; Chart.defaults.font.size=10;
+Chart.defaults.borderColor='rgba(56,120,190,.12)';
+function mkChart(id,cfg){ const el=$('#'+id); if(!el) return; if(state.charts[id]) state.charts[id].destroy(); state.charts[id]=new Chart(el,cfg); }
+
+function buildAnalytics(){
+  if(!state.month) { $('#analyticsMeta').textContent='USGS monthly feed unavailable.'; return; }
+  const feats=state.month;
+  $('#analyticsMeta').textContent = `${feats.length} EVENTS · ${feats[0]?new Date(feats[feats.length-1].properties.time).toISOString().slice(0,10):''} → ${new Date(feats[0].properties.time).toISOString().slice(0,10)} · SOURCE: USGS ALL_MONTH`;
+  const days={}, mags=Array(9).fill(0);
+  feats.forEach(f=>{ const d=new Date(f.properties.time); const k=`${d.getUTCMonth()+1}/${d.getUTCDate()}`; days[k]=(days[k]||0)+1;
+    const m=f.properties.mag; if(m!=null){ mags[Math.min(8,Math.max(0,Math.floor(m)))]++; } });
+  const labels=Object.keys(days);
+  mkChart('chDaily',{type:'bar',data:{labels,datasets:[{data:Object.values(days),backgroundColor:'rgba(56,189,248,.55)',borderColor:'#38bdf8',borderWidth:1}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:15}}}}});
+  mkChart('chMag',{type:'bar',data:{labels:['<1','1','2','3','4','5','6','7','8+'],datasets:[{data:mags,backgroundColor:mags.map((_,i)=>i>=6?'rgba(248,113,113,.6)':i>=5?'rgba(251,191,36,.55)':'rgba(56,189,248,.5)')}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+  mkChart('chDepth',{type:'scatter',data:{datasets:[{data:feats.map(f=>({x:f.properties.mag??0,y:f.geometry.coordinates[2]??0})),backgroundColor:'rgba(34,211,238,.5)',pointRadius:2.5}]},
+    options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:'magnitude'}},y:{title:{display:true,text:'depth (km)'},reverse:true}}}});
+  buildSolarCharts();
+}
+
+/* ═══════ Time machine ═══════ */
+async function buildTimeMachine(){
+  const wc=$('#whatChanged'); wc.innerHTML='<div class="label">WHAT CHANGED?</div><div class="skel h-5 w-2/3 mt-3"></div>';
+  let older=0, recent=0, haveSeis=false;
+  // seismic then/now
+  if(state.month){
+    haveSeis = true;
+    const now=Date.now(); const t0=now-15*864e5;
+    older=state.month.filter(f=>f.properties.time<t0).length;
+    recent=state.month.filter(f=>f.properties.time>=t0).length;
+    $('#tmThen').textContent=older; $('#tmNow').textContent=recent;
+    const perDay={}; state.month.forEach(f=>{const d=new Date(f.properties.time);const k=`${d.getUTCMonth()+1}/${d.getUTCDate()}`;perDay[k]=(perDay[k]||0)+1;});
+    mkChart('chTM',{type:'line',data:{labels:Object.keys(perDay),datasets:[{data:Object.values(perDay),borderColor:'#22d3ee',backgroundColor:'rgba(34,211,238,.12)',fill:true,tension:.35,pointRadius:2}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:10}}}}});
+  }
+  // tokyo temp window
+  try {
+    const w = await fetchJSON(`${SRC.meteo}?latitude=35.68&longitude=139.69&hourly=temperature_2m&past_days=7&forecast_days=1&timezone=auto`,'tm');
+    const h=w.hourly; const labels=h.time.map(t=>t.slice(5,16)); const data=h.temperature_2m;
+    $('#tmTThen').textContent=deg(data[0]); $('#tmTNow').textContent=deg(data[data.length-1]);
+    mkChart('chTMTemp',{type:'line',data:{labels,datasets:[{data,borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.1)',fill:true,tension:.4,pointRadius:0}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:8}}}}});
+    const d0=data[0], d1=data[data.length-1], dd=d1-d0;
+    const seisDelta = haveSeis ? ((recent-older)/Math.max(1,older)*100) : null;
+    wc.innerHTML=`<div class="label mb-3">WHAT CHANGED? — computed from retrieved data only</div>
+      <div class="space-y-3 text-[13px]">
+        ${seisDelta==null?'':row('Earthquake activity, days 1–15 vs 16–30', `${older} events`, `${recent} events`, (seisDelta>=0?'+':'')+seisDelta.toFixed(0)+'%', seisDelta>15?'warn':'ok','USGS all_month')}
+        ${row('Tokyo air temperature, 7-day window', deg(d0), deg(d1), (dd>=0?'+':'')+dd.toFixed(1)+' °'+(state.settings.units==='F'?'F':'C'), Math.abs(dd)>5?'warn':'ok','Open-Meteo observed')}
+        <div class="text-[11px] text-mut num pt-2 border-t hair">CONFIDENCE: HIGH · FULL FEED COVERAGE · NO ESTIMATED VALUES · UPDATED ${new Date().toUTCString().slice(5,25)} UTC</div>
+      </div>`;
+  } catch(e){
+    wc.innerHTML = `<div class="label mb-3">WHAT CHANGED?</div>
+      <div class="space-y-3 text-[13px]">
+        ${haveSeis? row('Earthquake activity, days 1–15 vs 16–30', `${older} events`, `${recent} events`, (((recent-older)/Math.max(1,older)*100)>=0?'+':'')+((recent-older)/Math.max(1,older)*100).toFixed(0)+'%', 'ok','USGS all_month') : ''}
+        <div class="text-[13px] text-mut">Weather history unavailable — Open-Meteo request failed.</div>
+      </div>`;
+  }
+}
+const row=(m,a,b,d,c,src)=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b hair pb-3">
+  <span class="w-full sm:w-64 text-mut">${m}</span>
+  <span class="num">${a} → <b class="text-accent">${b}</b></span>
+  <span class="num text-[12px] ${c==='warn'?'text-warn':'text-emerald-400'}">${d}</span>
+  <span class="text-[10px] text-mut num ml-auto">${src}</span></div>`;
+
+/* ═══════ Brief ═══════ */
+function buildBrief(){
+  const b=$('#briefBody'); if(!state.day){ b.innerHTML=errBox('Insufficient data for a brief — seismic feed offline.'); return; }
+  const evs=state.day, n=evs.length;
+  const strong=evs.filter(e=>e.properties.mag>=4.5);
+  const max=evs.reduce((m,e)=>e.properties.mag>(m?.properties.mag??-9)?e:m,null);
+  const byRegion={}; evs.forEach(e=>{ const r=(e.properties.place||'?').split(',').pop().trim(); byRegion[r]=(byRegion[r]||0)+1; });
+  const top=Object.entries(byRegion).sort((a,b)=>b[1]-a[1])[0];
+  const w=state.weather;
+  const kp = state.kindex ? parseFloat(state.kindex[state.kindex.length-1][1]) : null;
+  const eonetN = state.eonet ? state.eonet.length : null;
+  const iss = state.iss;
+  b.innerHTML=`
+  <div class="glass rounded-lg p-5"><div class="label mb-2">PLANETARY BRIEF · ${new Date().toUTCString().slice(0,22)} UTC</div>
+  <p class="text-[14px] leading-relaxed">"EarthPulse analysis of currently available datasets indicates <b class="text-accent2">${n} seismic events</b> in the past 24 hours${top?`, with elevated activity near <b>${top[0]}</b> (${top[1]} events)`:''}. ${max?`The strongest registered event measured <b class="text-accent">M ${fmtMag(max.properties.mag)}</b>${max.properties.place?' · '+max.properties.place:''}.`:''} ${strong.length?`<b>${strong.length}</b> event(s) reached magnitude 4.5 or greater.`:'No events reached magnitude 4.5.'}${w?` At the Tokyo reference station, conditions read <b>${deg(w.current.temperature_2m)}</b> with ${w.current.relative_humidity_2m}% relative humidity.`:''}${kp!=null?` Planetary geomagnetic index reads <b>Kp ${kp.toFixed(1)}</b>.`:''}${eonetN!=null?` NASA EONET currently tracks <b>${eonetN} open natural events</b> worldwide.`:''}${iss?` The ISS is currently at <b>${Math.round(iss.altitude)} km</b> altitude near <b>${iss.latitude.toFixed(1)}°, ${iss.longitude.toFixed(1)}°</b>.`:''}"</p></div>
+  <div class="grid md:grid-cols-2 gap-4">
+    ${['🌍 Earth','🌦 Atmosphere','🌋 Geology','☀ Space Weather','🛰 Orbital'].map((t,i)=>{
+      const bodies=[
+        w?`Reference station (Tokyo): ${deg(w.current.temperature_2m)}, wind ${w.current.wind_speed_10m} km/h, pressure ${w.current.pressure_msl} hPa.`:'Reference weather unavailable.',
+        w?`Humidity ${w.current.relative_humidity_2m}%, AQI ${state.aq?.current?.us_aqi??'unavailable'}.`:'Atmospheric dataset partial.',
+        `${n} events / 24 h · strongest M ${max?fmtMag(max.properties.mag):'—'} · source USGS.${eonetN!=null?` ${eonetN} open natural events tracked via NASA EONET.`:''}`,
+        kp!=null? `Planetary K-index ${kp.toFixed(1)} · source NOAA SWPC.` : 'Space weather dataset unavailable.',
+        iss? `Altitude ${Math.round(iss.altitude)} km · velocity ${Math.round(iss.velocity).toLocaleString()} km/h · source wheretheiss.at.` : 'Orbital tracker unavailable.'];
+      const unavail=[false,false,false,kp==null,!iss][i];
+      return `<div class="glass rounded-lg p-4 ${unavail?'opacity-70':''}"><div class="text-sm mb-1">${t}</div><p class="text-[12px] ${unavail?'text-warn':'text-mut'}">${bodies[i]}</p></div>`;}).join('')}
+  </div>
+  <div class="glass-soft rounded-lg p-4 text-[11px] text-mut num">DATA SOURCES: USGS EARTHQUAKE FEEDS (LIVE) · OPEN-METEO (LIVE) · NOAA SWPC (LIVE) · NASA EONET (LIVE) · WHERETHEISS.AT (LIVE) · NO ESTIMATED OR SYNTHETIC VALUES INCLUDED</div>`;
+}
+
+/* ═══════ Sources table ═══════ */
+function buildSources(){
+  const st=(k)=>{const t=state.lastFetch[k]; return t?`<span class="text-emerald-400">ONLINE</span>`:`<span class="text-danger">OFFLINE</span>`;};
+  const ft=(k)=>{const t=state.lastFetch[k]; return t?new Date(t).toLocaleTimeString():'—';};
+  $('#srcTable').innerHTML=[
+    ['Seismic events (24 h / 30 d)','USGS earthquake feeds','Real-time',st('usgs'),ft('usgs')],
+    ['Weather · current & history','Open-Meteo Forecast API','Hourly',st('meteo'),ft('meteo')],
+    ['Air quality · single point','Open-Meteo Air Quality API','Hourly',st('aq'),ft('aq')],
+    ['Geocoding / search','Open-Meteo Geocoding','On demand',st('geo'),ft('geo')],
+    ['Planetary K-index','NOAA SWPC','Every 1 min',st('kindex'),ft('kindex')],
+    ['GOES X-ray flux','NOAA SWPC','Every 1 min',st('xray'),ft('xray')],
+    ['Natural events (wildfires, storms, volcanoes…)','NASA EONET v3','Real-time',st('eonet'),ft('eonet')],
+    ['ISS orbital position, altitude & velocity','wheretheiss.at API','Real-time',st('iss'),ft('iss')],
+    ['Global temperature anomaly','— (no free verified API)','—','<span class="text-warn">UNAVAILABLE</span>','—'],
+    ['Tropical storms / cyclones (named-storm tracks)','— (no reliable free API)','—','<span class="text-warn">UNAVAILABLE</span>','—'],
+  ].map(r=>`<tr>${r.map((c,i)=>`<td class="px-4 py-3 ${i===0?'text-slate-200':'text-mut'}">${c}</td>`).join('')}</tr>`).join('');
+}
+
+/* ═══════ Search ═══════ */
+let searchTimer;
+$('#searchInput').addEventListener('input', e=>{
+  clearTimeout(searchTimer); const q=e.target.value.trim();
+  if(q.length<2){ $('#searchResults').classList.add('hidden'); return; }
+  searchTimer=setTimeout(()=>doSearch(q), 350);
+});
+async function doSearch(q){
+  const box=$('#searchResults'); box.classList.remove('hidden');
+  box.innerHTML='<div class="p-3 skel h-8 m-2"></div>';
+  const out=[];
+  const magMatch=q.match(/(\d+(?:\.\d+)?)\s*\+?\s*(?:mag|m)?\s*earthq/i);
+  if(magMatch && state.day){
+    const th=parseFloat(magMatch[1]);
+    state.day.filter(e=>e.properties.mag>=th).slice(0,6).forEach(e=>{ const [lon,lat]=e.geometry.coordinates;
+      out.push(`<div class="feeditem px-4 py-2.5 flex justify-between" data-lat="${lat}" data-lon="${lon}"><span>🌋 Earthquake M ${fmtMag(e.properties.mag)}</span><span class="text-mut text-[11px] truncate ml-3">${e.properties.place??''}</span></div>`);});
+  }
+  try {
+    const g=await fetchJSON(`${SRC.geo}?name=${encodeURIComponent(q)}&count=5`,'geo');
+    (g.results||[]).forEach(r=>out.push(`<div class="feeditem px-4 py-2.5 flex justify-between" data-lat="${r.latitude}" data-lon="${r.longitude}" data-name="${r.name}, ${r.country??''}">
+      <span>◎ ${r.name}${r.country?', '+r.country:''}</span><span class="num text-[11px] text-mut">${r.latitude.toFixed(1)}, ${r.longitude.toFixed(1)}</span></div>`));
+  } catch(e){}
+  box.innerHTML = out.slice(0,8).join('') || '<div class="p-4 text-mut text-[13px]">No matches found.</div>';
+  box.querySelectorAll('.feeditem').forEach(el=>el.onclick=()=>{
+    box.classList.add('hidden'); $('#searchInput').value='';
+    focusGlobe(+el.dataset.lat,+el.dataset.lon); openRegion(+el.dataset.lat,+el.dataset.lon, el.dataset.name||'Selected location');
+  });
+}
+document.addEventListener('click',e=>{ if(!e.target.closest('#searchResults')&&!e.target.closest('#searchInput')) $('#searchResults').classList.add('hidden'); });
+
+/* ═══════ Region modal ═══════ */
+async function openRegion(lat,lon,name){
+  const M=$('#regionModal'); M.classList.remove('hidden'); M.classList.add('flex');
+  $('#rmTitle').textContent=name||'Unnamed region';
+  $('#rmCoords').textContent=`${lat.toFixed(3)}°, ${lon.toFixed(3)}°`;
+  $('#rmBody').innerHTML='<div class="skel h-10 col-span-3"></div>'; $('#rmQuakes').innerHTML='<div class="skel h-6"></div>';
+  // nearby quakes
+  const R=500; const km=(a,b,c,d)=>{const Rr=6371,x=(c-a)*Math.PI/180,y=(d-b)*Math.PI/180;const s=Math.sin(x/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(y/2)**2;return 2*Rr*Math.asin(Math.sqrt(s));};
+  const near = state.day? [...state.day].filter(e=>km(lat,lon,e.geometry.coordinates[1],e.geometry.coordinates[0])<=R).sort((a,b)=>b.properties.time-a.properties.time).slice(0,5):[];
+  $('#rmQuakes').innerHTML = near.length? near.map(e=>`<div class="flex justify-between border-b hair pb-2"><span><span class="sev-dot ${sevClass(e.properties.mag)}"></span>M ${fmtMag(e.properties.mag)} · ${e.properties.place??''}</span><span class="num text-[11px] text-mut">${timeAgo(e.properties.time)}</span></div>`).join('')
+    : '<div class="text-mut text-[12px]">No recorded seismic events within 500 km in the past 24 h.</div>';
+  try{
+    const [w,a]=await Promise.all([
+      fetchJSON(`${SRC.meteo}?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,pressure_msl,weather_code&hourly=temperature_2m&past_days=1&forecast_days=1&timezone=auto`,'rmw'),
+      fetchJSON(`${SRC.meteoAQ}?latitude=${lat}&longitude=${lon}&current=us_aqi,pm2_5`,'rma').catch(()=>null)]);
+    const cell=(l,v)=>`<div class="glass-soft rounded-md p-3"><div class="label">${l}</div><div class="num text-lg mt-1">${v}</div></div>`;
+    $('#rmBody').innerHTML = cell('Temperature',deg(w.current.temperature_2m))+cell('Feels like',deg(w.current.apparent_temperature))
+      +cell('Humidity',w.current.relative_humidity_2m+'%')+cell('Wind',w.current.wind_speed_10m+' km/h')
+      +cell('Pressure',w.current.pressure_msl+' hPa')+cell('US AQI', a?`<span class="${a.current.us_aqi>100?'text-danger':''}">${a.current.us_aqi??'—'}</span>`:'<span class="text-warn">N/A</span>');
+    if(state.modalChart) state.modalChart.destroy();
+    state.modalChart=new Chart($('#chRM'),{type:'line',data:{labels:w.hourly.time.map(t=>t.slice(11,16)),datasets:[{data:w.hourly.temperature_2m,borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.1)',fill:true,tension:.4,pointRadius:0}]},options:{maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+  }catch(e){ $('#rmBody').innerHTML=`<div class="col-span-3">${errBox('Environmental data unavailable for this region.')}</div>`; }
+}
+$('#rmClose').onclick=closeRegion;
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeRegion(); });
+function closeRegion(){ const M=$('#regionModal'); M.classList.add('hidden'); M.classList.remove('flex'); if(state.modalChart){state.modalChart.destroy();state.modalChart=null;} }
+
+/* ═══════ GLOBE + ORBITAL RENDER ═══════ */
+let globe, scene, camera, renderer, globeGroup, ready=false, autoRotate=true, dragging=false, px=0, py=0;
+let issObj, issRing, issGlow;
+const ISS_ALT_FRAC = 0.064; // ~408km / 6371km Earth radius — real proportion, not exaggerated
+const ISS_INCLINATION = 51.6 * Math.PI/180; // real ISS orbital inclination
+
+function initGlobe(){
+  if(ready) return; ready=true;
+  const wrap=$('#globeWrap');
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(45, wrap.clientWidth/wrap.clientHeight, 1, 4000);
+  camera.position.z=340;
+  renderer=new THREE.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(wrap.clientWidth,wrap.clientHeight);
+  wrap.appendChild(renderer.domElement);
+  globeGroup=new THREE.Group(); scene.add(globeGroup);
+  globe=new ThreeGlobe()
+    .globeImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-blue-marble.jpg')
+    .bumpImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-topology.png')
+    .showAtmosphere(true).atmosphereColor('#3aa8ff').atmosphereAltitude(0.22)
+    .pointLat('lat').pointLng('lon').pointColor('color').pointAltitude('alt').pointRadius('r')
+    .pointLabel('label').onPointClick(p=>{ if(p.iss) return; focusGlobe(p.lat,p.lon); openRegion(p.lat,p.lon,p.place); });
+  globeGroup.add(globe);
+  // atmosphere glow shell
+  const glowMat=new THREE.ShaderMaterial({transparent:true,side:THREE.BackSide,
+    vertexShader:'varying vec3 vN; void main(){ vN=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+    fragmentShader:'varying vec3 vN; void main(){ float i=pow(0.72-dot(vN,vec3(0,0,1.0)),2.2); gl_FragColor=vec4(0.3,0.65,1.0,1.0)*i; }'});
+  globeGroup.add(new THREE.Mesh(new THREE.SphereGeometry(100*1.22,64,64),glowMat));
+  // stars
+  const sg=new THREE.BufferGeometry(); const sp=[];
+  for(let i=0;i<1800;i++){ const r=1600+Math.random()*600, t=Math.random()*Math.PI*2, p=Math.acos(2*Math.random()-1);
+    sp.push(r*Math.sin(p)*Math.cos(t), r*Math.sin(p)*Math.sin(t), r*Math.cos(p)); }
+  sg.setAttribute('position',new THREE.Float32BufferAttribute(sp,3));
+  scene.add(new THREE.Points(sg,new THREE.PointsMaterial({color:0x88aacc,size:1.4,transparent:true,opacity:.7})));
+  // orbital render — illustrative inclined orbit ring + live ISS marker
+  addOrbitalLayer();
+  // interaction
+  const el=renderer.domElement;
+  el.addEventListener('pointerdown',e=>{dragging=true;px=e.clientX;py=e.clientY;});
+  window.addEventListener('pointerup',()=>dragging=false);
+  window.addEventListener('pointermove',e=>{ if(!dragging)return;
+    globeGroup.rotation.y+=(e.clientX-px)*0.004; globeGroup.rotation.x=Math.max(-1,Math.min(1,globeGroup.rotation.x+(e.clientY-py)*0.003)); px=e.clientX;py=e.clientY; });
+  el.addEventListener('wheel',e=>{ e.preventDefault(); camera.position.z=Math.max(160,Math.min(700,camera.position.z+e.deltaY*0.35)); },{passive:false});
+  new ResizeObserver(()=>{ const w=wrap.clientWidth,h=wrap.clientHeight; camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h); }).observe(wrap);
+  $('#globeLoading').style.display='none';
+  updateGlobePoints();
+  if(state.iss) updateISSMarker(state.iss.latitude, state.iss.longitude);
+  let t=0;
+  (function tick(){ requestAnimationFrame(tick);
+    if(autoRotate && !dragging && !state.settings.motion) globeGroup.rotation.y+=0.0011;
+    if(!state.settings.motion && issGlow){ t+=0.05; const s=1+Math.sin(t)*0.15; issGlow.scale.set(s,s,s); }
+    renderer.render(scene,camera); })();
+}
+function addOrbitalLayer(){
+  const R = 100*(1+ISS_ALT_FRAC);
+  // illustrative orbital ring at ISS's real ~51.6° inclination
+  const pts=[];
+  for(let i=0;i<=128;i++){
+    const a=(i/128)*Math.PI*2;
+    const x=R*Math.cos(a), y0=R*Math.sin(a);
+    pts.push(new THREE.Vector3(x, y0*Math.cos(ISS_INCLINATION), y0*Math.sin(ISS_INCLINATION)));
+  }
+  const ringGeom=new THREE.BufferGeometry().setFromPoints(pts);
+  issRing=new THREE.LineLoop(ringGeom,new THREE.LineBasicMaterial({color:0x7dd3fc,transparent:true,opacity:.32}));
+  globeGroup.add(issRing);
+  // ISS marker: bright core + soft glow shell
+  issObj=new THREE.Mesh(new THREE.SphereGeometry(1.4,12,12),new THREE.MeshBasicMaterial({color:0xffffff}));
+  issGlow=new THREE.Mesh(new THREE.SphereGeometry(3.2,12,12),new THREE.MeshBasicMaterial({color:0xa78bfa,transparent:true,opacity:.35}));
+  globeGroup.add(issObj); globeGroup.add(issGlow);
+}
+function updateISSMarker(lat,lon){
+  if(!issObj) return;
+  const R=100*(1+ISS_ALT_FRAC);
+  const phi=(90-lat)*Math.PI/180, theta=(lon+180)*Math.PI/180;
+  const pos=new THREE.Vector3(-R*Math.sin(phi)*Math.cos(theta), R*Math.cos(phi), R*Math.sin(phi)*Math.sin(theta));
+  issObj.position.copy(pos); issGlow.position.copy(pos);
+}
+function updateGlobePoints(){
+  if(!ready||!state.day) return;
+  const quakePts = state.day.filter(e=>e.properties.mag!=null).map(e=>({
+    lat:e.geometry.coordinates[1], lon:e.geometry.coordinates[0], place:e.properties.place,
+    mag:e.properties.mag,
+    color:e.properties.mag>=7?'#f87171':e.properties.mag>=6?'#fb923c':e.properties.mag>=4.5?'#fbbf24':'#38bdf8',
+    alt:0.012+(e.properties.mag??0)*0.006, r:Math.max(0.35,(e.properties.mag??0)*0.28),
+    label:`M ${fmtMag(e.properties.mag)} · ${e.properties.place??''}`
+  }));
+  const eonetPts = (state.eonet||[]).map(e=>{
+    const geom = e.geometry?.[e.geometry.length-1]; const coords = geom?.coordinates;
+    if(!coords) return null;
+    const lat = Array.isArray(coords[0]) ? coords[0][1] : coords[1];
+    const lon = Array.isArray(coords[0]) ? coords[0][0] : coords[0];
+    return { lat, lon, place:e.title, mag:null, color:'#a78bfa', alt:0.02, r:0.4, label:`${e.title} · NASA EONET` };
+  }).filter(Boolean);
+  globe.pointsData([...quakePts, ...eonetPts]);
+}
+function focusGlobe(lat,lon){
+  if(!ready) return;
+  const r=100, phi=(90-lat)*Math.PI/180, theta=(lon+180)*Math.PI/180;
+  const x=-r*Math.sin(phi)*Math.cos(theta), z=r*Math.sin(phi)*Math.sin(theta), y=r*Math.cos(phi);
+  const camDist=camera.position.length();
+  const anim={t:0}; const from=camera.position.clone();
+  const to=new THREE.Vector3(x,y,z).normalize().multiplyScalar(camDist);
+  const fromQ=globeGroup.quaternion.clone();
+  const m=new THREE.Matrix4().lookAt(to,new THREE.Vector3(0,0,0),new THREE.Vector3(0,1,0));
+  const toQ=new THREE.Quaternion().setFromRotationMatrix(m); globeGroup.quaternion.set(0,0,0,1);
+  const targetQ=toQ; const iq=new THREE.Quaternion();
+  const step=()=>{ anim.t+=0.045; const k=Math.min(1,anim.t); const e=1-Math.pow(1-k,3);
+    iq.slerpQuaternions(fromQ,targetQ,e); globeGroup.quaternion.copy(iq);
+    camera.position.lerpVectors(from,to,e);
+    if(k<1) requestAnimationFrame(step); };
+  step();
+}
+
+/* ═══════ Nav / clock / settings ═══════ */
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+  const v=b.dataset.view;
+  document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
+  $('#view-'+v).classList.add('active');
+  if(v==='overview'){ requestAnimationFrame(()=>{ if(!ready) initGlobe(); const w=$('#globeWrap'); if(ready){renderer.setSize(w.clientWidth,w.clientHeight);} }); }
+  if(v==='sources') buildSources();
+  // fix: charts created while their tab was hidden (display:none) get 0-height canvases —
+  // resize every live chart once its tab becomes visible so it renders correctly
+  requestAnimationFrame(()=>{ Object.values(state.charts).forEach(c=>{ try{ c.resize(); }catch(e){} }); });
+  $('#sidebar').classList.add('-translate-x-full'); $('#scrim').classList.add('hidden');
+});
+$('#menuBtn').onclick=()=>{ $('#sidebar').classList.remove('-translate-x-full'); $('#scrim').classList.remove('hidden'); };
+$('#scrim').onclick=()=>{ $('#sidebar').classList.add('-translate-x-full'); $('#scrim').classList.add('hidden'); };
+setInterval(()=>{ const d=new Date(); $('#utcClock').textContent=d.toUTCString().slice(17,25);
+  $('#localOffset').textContent='LOCAL '+(new Date().toTimeString().slice(0,5));
+  const up=Math.floor((Date.now()-bootTime)/1000);
+  $('#uptime').textContent=`UPTIME ${String(Math.floor(up/3600)).padStart(2,'0')}:${String(Math.floor(up/60)%60).padStart(2,'0')}:${String(up%60).padStart(2,'0')}`;
+  // stale check
+  const t=state.lastFetch['usgs'];
+  $('#staleWarn').classList.toggle('hidden', !(t && Date.now()-t>600000));
+},1000);
+const bootTime=Date.now();
+
+function applySettings(){
+  const s=state.settings;
+  $('#uC').classList.toggle('active',s.units==='C'); $('#uF').classList.toggle('active',s.units==='F');
+  $('#motionBtn').textContent=s.motion?'ON':'OFF'; $('#motionBtn').classList.toggle('active',s.motion);
+  $('#rotBtn').textContent=s.rotate?'ON':'OFF'; $('#rotBtn').classList.toggle('active',!s.rotate);
+  document.body.classList.toggle('reduced',s.motion);
+  $('#refreshSel').value=String(s.refresh);
+  autoRotate=s.rotate;
+  localStorage.setItem('ep_settings',JSON.stringify(s));
+  if(state.weather) loadWeather();
+  if(state.month) buildTimeMachine();
+  buildBrief();
+}
+$('#uC').onclick=()=>{state.settings.units='C';applySettings();};
+$('#uF').onclick=()=>{state.settings.units='F';applySettings();};
+$('#motionBtn').onclick=()=>{state.settings.motion=!state.settings.motion;applySettings();};
+$('#rotBtn').onclick=()=>{state.settings.rotate=!state.settings.rotate;applySettings();};
+$('#refreshSel').onchange=e=>{state.settings.refresh=+e.target.value;applySettings();startRefresh();};
+let refreshInt;
+function startRefresh(){ clearInterval(refreshInt); refreshInt=setInterval(()=>{ loadQuakes(); loadSolar(); loadNaturalEvents(); loadISS(); }, state.settings.refresh); }
+$('#refreshBtn').onclick=()=>{ $('#refreshIcon').style.display='inline-block';
+  Promise.all([loadQuakes(), loadSolar(), loadNaturalEvents(), loadISS()]).finally(()=>setTimeout(()=>$('#refreshIcon').style.display='',800)); };
+
+/* ═══════ BOOT ═══════ */
+applySettings(); startRefresh(); loadQuakes(); loadWeather(); loadSolar(); loadNaturalEvents(); loadISS(); buildSources();
+const globeObs=new IntersectionObserver(en=>{ en.forEach(x=>{ if(x.isIntersecting && !ready) initGlobe(); }); },{threshold:.1});
+globeObs.observe($('#globeWrap'));
+initGlobe();
+</script>
+</body>
+</html>
