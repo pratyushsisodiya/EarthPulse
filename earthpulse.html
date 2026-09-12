@@ -332,7 +332,218 @@ export default function GlobeScene({
     </Canvas>
   );
 }
+/* ═══════ GLOBE STATE ═══════ */
+let globe, scene, camera, renderer, globeGroup, quakeGroup,
+    quakeRaycastTargets = [], raycaster, mouseNDC,
+    ready = false, autoRotate = true, dragging = false, dragDist = 0, px = 0, py = 0;
 
+function globeError(msg){
+  console.error('[Globe] init failed:', msg);
+  const el = document.querySelector('#globeLoading');
+  if(el) el.innerHTML = `<div class="text-danger text-[12px] max-w-xs text-center px-4">⚠ Globe failed to load: ${msg}</div>
+    <button id="retryGlobe" class="btn chip mt-2">RETRY</button>`;
+  ready = false;
+  const rb = document.querySelector('#retryGlobe');
+  if(rb) rb.onclick = () => {
+    if(el){ el.innerHTML = '<div class="skel w-40 h-3"></div><div class="skel w-28 h-3"></div><div class="label mt-2">INITIALIZING ORBITAL RENDERER…</div>'; el.style.display = 'flex'; }
+    initGlobe();
+  };
+}
+
+function initGlobe(){
+  if(ready) return;
+  if(typeof THREE === 'undefined'){ globeError('three.js did not load (check CDN access)'); return; }
+  if(typeof ThreeGlobe === 'undefined'){ globeError('three-globe did not load (check CDN access)'); return; }
+
+  const wrap = document.querySelector('#globeWrap');
+  if(!wrap || wrap.clientWidth < 10 || wrap.clientHeight < 10){
+    globeError('globe container has no size yet — retrying shortly');
+    setTimeout(() => { if(!ready) initGlobe(); }, 500);
+    return;
+  }
+  ready = true;
+
+  try {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(45, wrap.clientWidth / wrap.clientHeight, 1, 4000);
+    camera.position.z = 340;
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+    wrap.appendChild(renderer.domElement);
+
+    globeGroup = new THREE.Group();
+    scene.add(globeGroup);
+
+    // NOTE: raw three-globe only supports globeImageUrl/bumpImageUrl/atmosphere —
+    // it has NO pointLabel/onPointClick (those only exist on the separate
+    // globe.gl wrapper, which owns its own DOM element). Markers/interaction
+    // below are built manually instead.
+    globe = new ThreeGlobe()
+      .globeImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-blue-marble.jpg')
+      .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
+      .showAtmosphere(true).atmosphereColor('#3aa8ff').atmosphereAltitude(0.22);
+    globeGroup.add(globe);
+
+    quakeGroup = new THREE.Group();
+    globeGroup.add(quakeGroup);
+
+    raycaster = new THREE.Raycaster();
+    mouseNDC = new THREE.Vector2();
+
+    // extra atmospheric glow shell
+    const glowMat = new THREE.ShaderMaterial({
+      transparent: true, side: THREE.BackSide,
+      vertexShader: 'varying vec3 vN; void main(){ vN=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+      fragmentShader: 'varying vec3 vN; void main(){ float i=pow(0.72-dot(vN,vec3(0,0,1.0)),2.2); gl_FragColor=vec4(0.3,0.65,1.0,1.0)*i; }'
+    });
+    globeGroup.add(new THREE.Mesh(new THREE.SphereGeometry(100 * 1.22, 64, 64), glowMat));
+
+    // starfield
+    const sg = new THREE.BufferGeometry(); const sp = [];
+    for(let i = 0; i < 1800; i++){
+      const r = 1600 + Math.random() * 600, t = Math.random() * Math.PI * 2, p = Math.acos(2 * Math.random() - 1);
+      sp.push(r * Math.sin(p) * Math.cos(t), r * Math.sin(p) * Math.sin(t), r * Math.cos(p));
+    }
+    sg.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
+    scene.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0x88aacc, size: 1.4, transparent: true, opacity: .7 })));
+
+    // ═══ interaction: drag to rotate, click/hover to pick a marker ═══
+    const el = renderer.domElement;
+    el.addEventListener('pointerdown', e => { dragging = true; px = e.clientX; py = e.clientY; dragDist = 0; });
+    window.addEventListener('pointerup', e => {
+      dragging = false;
+      if(dragDist < 6 && e.target === el) handleGlobeClick(e);
+    });
+    window.addEventListener('pointermove', e => {
+      if(dragging){
+        dragDist += Math.hypot(e.clientX - px, e.clientY - py);
+        globeGroup.rotation.y += (e.clientX - px) * 0.004;
+        globeGroup.rotation.x = Math.max(-1, Math.min(1, globeGroup.rotation.x + (e.clientY - py) * 0.003));
+        px = e.clientX; py = e.clientY;
+      }
+      if(e.target === el || el.contains(e.target)) updateGlobeHover(e); else hideGlobeTooltip();
+    });
+    el.addEventListener('wheel', e => {
+      e.preventDefault();
+      camera.position.z = Math.max(160, Math.min(700, camera.position.z + e.deltaY * 0.35));
+    }, { passive: false });
+
+    new ResizeObserver(() => {
+      const w = wrap.clientWidth, h = wrap.clientHeight;
+      camera.aspect = w / h; camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }).observe(wrap);
+
+    const loadingEl = document.querySelector('#globeLoading');
+    if(loadingEl) loadingEl.style.display = 'none';
+
+    updateGlobePoints();
+
+    (function tick(){
+      requestAnimationFrame(tick);
+      if(autoRotate && !dragging) globeGroup.rotation.y += 0.0011;
+      renderer.render(scene, camera);
+    })();
+  } catch(e){
+    globeError(e.message || String(e));
+  }
+}
+
+/* ═══════ MARKERS (built manually — no points-layer API needed) ═══════ */
+function updateGlobePoints(){
+  if(!ready || !globe || !quakeGroup || !window.state?.day) return;
+  while(quakeGroup.children.length) quakeGroup.remove(quakeGroup.children[0]);
+  quakeRaycastTargets = [];
+
+  state.day.filter(e => e.properties.mag != null).forEach(e => {
+    const lon = e.geometry.coordinates[0], lat = e.geometry.coordinates[1], mag = e.properties.mag;
+    const altFrac = 0.012 + (mag ?? 0) * 0.006;
+    const c = globe.getCoords(lat, lon, altFrac); // real utility method on raw three-globe
+
+    const colorHex = mag >= 7 ? 0xf87171 : mag >= 6 ? 0xfb923c : mag >= 4.5 ? 0xfbbf24 : 0x38bdf8;
+    const r = Math.max(0.6, (mag ?? 0) * 0.55);
+
+    const core = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 10), new THREE.MeshBasicMaterial({ color: colorHex, toneMapped: false }));
+    core.position.set(c.x, c.y, c.z);
+    core.userData = { lat, lon, place: e.properties.place, mag };
+
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(r * 2.4, 10, 10), new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: .18, toneMapped: false }));
+    glow.position.copy(core.position);
+
+    quakeGroup.add(core); quakeGroup.add(glow);
+    quakeRaycastTargets.push(core);
+  });
+}
+
+/* ═══════ RAYCASTING: hover + click ═══════ */
+function pickQuakeAt(clientX, clientY){
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouseNDC, camera);
+  const hits = raycaster.intersectObjects(quakeRaycastTargets, false);
+  return hits.length ? hits[0].object.userData : null;
+}
+
+function handleGlobeClick(e){
+  const d = pickQuakeAt(e.clientX, e.clientY);
+  if(d){
+    focusGlobe(d.lat, d.lon);
+    // hook your own click behavior here, e.g. openRegion(d.lat, d.lon, d.place);
+  }
+}
+
+function hideGlobeTooltip(){
+  const tip = document.querySelector('#globeTooltip');
+  if(tip) tip.classList.add('hidden');
+  if(renderer) renderer.domElement.style.cursor = dragging ? 'grabbing' : 'grab';
+}
+
+function updateGlobeHover(e){
+  if(!ready) return;
+  const d = pickQuakeAt(e.clientX, e.clientY);
+  const tip = document.querySelector('#globeTooltip');
+  if(d){
+    tip.textContent = `M ${d.mag?.toFixed(1)} · ${d.place || 'Unknown location'}`;
+    tip.style.left = (e.clientX + 14) + 'px';
+    tip.style.top  = (e.clientY + 14) + 'px';
+    tip.classList.remove('hidden');
+    renderer.domElement.style.cursor = 'pointer';
+  } else {
+    hideGlobeTooltip();
+  }
+}
+
+/* ═══════ FLY-TO ANIMATION ═══════ */
+function focusGlobe(lat, lon){
+  if(!ready) return;
+  const r = 100, phi = (90 - lat) * Math.PI / 180, theta = (lon + 180) * Math.PI / 180;
+  const x = -r * Math.sin(phi) * Math.cos(theta), z = r * Math.sin(phi) * Math.sin(theta), y = r * Math.cos(phi);
+  const camDist = camera.position.length();
+  const anim = { t: 0 }; const from = camera.position.clone();
+  const to = new THREE.Vector3(x, y, z).normalize().multiplyScalar(camDist);
+  const fromQ = globeGroup.quaternion.clone();
+  const m = new THREE.Matrix4().lookAt(to, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0));
+  const toQ = new THREE.Quaternion().setFromRotationMatrix(m);
+  globeGroup.quaternion.set(0, 0, 0, 1);
+  const iq = new THREE.Quaternion();
+  (function step(){
+    anim.t += 0.045; const k = Math.min(1, anim.t); const e = 1 - Math.pow(1 - k, 3);
+    iq.slerpQuaternions(fromQ, toQ, e); globeGroup.quaternion.copy(iq);
+    camera.position.lerpVectors(from, to, e);
+    if(k < 1) requestAnimationFrame(step);
+  })();
+}
+
+/* ═══════ BOOT ═══════ */
+const globeObs = new IntersectionObserver(entries => {
+  entries.forEach(x => { if(x.isIntersecting && !ready) initGlobe(); });
+}, { threshold: .1 });
+globeObs.observe(document.querySelector('#globeWrap'));
+if(document.readyState === 'complete') initGlobe();
+else window.addEventListener('load', () => initGlobe());
 <!-- ══════════ SIDEBAR ══════════ -->
 <aside id="sidebar" class="fixed left-0 top-0 h-full w-[220px] glass z-40 flex flex-col transition-transform duration-300 -translate-x-full lg:translate-x-0">
   <div class="px-5 h-[60px] flex items-center gap-3 border-b hair">
