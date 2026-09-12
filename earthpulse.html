@@ -62,6 +62,276 @@ tailwind.config = {
 <base target="_blank">
 </head>
 <body class="antialiased overflow-x-hidden">
+import { OrbitControls, Stars, useTexture } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Suspense, useEffect, useMemo, useRef } from "react";
+import * as THREE from "three";
+
+import earthTexture from "@/assets/earth-map.jpg";
+import { SEVERITY_COLOR, latLonToVector3, subsolarPoint } from "./geo";
+
+export type GlobeMarker = {
+  id: string;
+  lat: number;
+  lon: number;
+  severity: "info" | "watch" | "elevated" | "severe";
+  size?: number | undefined;
+  label: string;
+};
+
+export type GlobeSceneProps = {
+  markers: GlobeMarker[];
+  focus?: { lat: number; lon: number; id?: string | undefined } | null | undefined;
+  autoRotate?: boolean | undefined;
+  onSelect?: ((id: string) => void) | undefined;
+  interactive?: boolean | undefined;
+  showOrbitalTrack?: boolean | undefined; // Optional ISS/satellite orbit line
+};
+
+const RADIUS = 2;
+
+function Earth() {
+  const map = useTexture(earthTexture);
+  useEffect(() => {
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.anisotropy = 4;
+  }, [map]);
+
+  return (
+    <mesh>
+      <sphereGeometry args={[RADIUS, 96, 96]} />
+      <meshStandardMaterial map={map} roughness={0.92} metalness={0.05} />
+    </mesh>
+  );
+}
+
+/** Additive fresnel shell that reads as an atmospheric limb. */
+function Atmosphere() {
+  const material = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        side: THREE.BackSide,
+        depthWrite: false,
+        uniforms: { uColor: { value: new THREE.Color("#5ad9ff") } },
+        vertexShader: `
+          varying vec3 vNormal;
+          varying vec3 vView;
+          void main() {
+            vNormal = normalize(normalMatrix * normal);
+            vec4 mv = modelViewMatrix * vec4(position, 1.0);
+            vView = normalize(-mv.xyz);
+            gl_Position = projectionMatrix * mv;
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uColor;
+          varying vec3 vNormal;
+          varying vec3 vView;
+          void main() {
+            float rim = pow(1.0 - abs(dot(vNormal, vView)), 2.4);
+            gl_FragColor = vec4(uColor, rim * 0.85);
+          }
+        `,
+      }),
+    [],
+  );
+
+  return (
+    <mesh scale={1.16}>
+      <sphereGeometry args={[RADIUS, 64, 64]} />
+      <primitive object={material} attach="material" />
+    </mesh>
+  );
+}
+
+/** Optional visual orbital trajectory (e.g., ISS orbital inclination 51.6°). */
+function OrbitalPath() {
+  const points = useMemo(() => {
+    const pts: THREE.Vector3[] = [];
+    const orbitRadius = RADIUS * 1.15;
+    const inclination = THREE.MathUtils.degToRad(51.6); // ISS orbital inclination
+
+    for (let i = 0; i <= 128; i++) {
+      const theta = (i / 128) * Math.PI * 2;
+      const x = orbitRadius * Math.cos(theta);
+      const y = orbitRadius * Math.sin(theta) * Math.sin(inclination);
+      const z = orbitRadius * Math.sin(theta) * Math.cos(inclination);
+      pts.push(new THREE.Vector3(x, y, z));
+    }
+    return pts;
+  }, []);
+
+  const lineGeometry = useMemo(() => new THREE.BufferGeometry().setFromPoints(points), [points]);
+
+  return (
+    <line geometry={lineGeometry}>
+      <lineBasicMaterial color="#5ad9ff" transparent opacity={0.35} />
+    </line>
+  );
+}
+
+function Markers({
+  markers,
+  onSelect,
+}: {
+  markers: GlobeMarker[];
+  onSelect?: ((id: string) => void) | undefined;
+}) {
+  return (
+    <group>
+      {markers.map((marker) => {
+        const position = latLonToVector3(marker.lat, marker.lon, RADIUS * 1.012);
+        const color = SEVERITY_COLOR[marker.severity] ?? "#4fc3f7";
+        const size = marker.size ?? 0.02;
+        return (
+          <group key={marker.id} position={position}>
+            <mesh
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect?.(marker.id);
+              }}
+              onPointerOver={(event) => {
+                event.stopPropagation();
+                document.body.style.cursor = "pointer";
+              }}
+              onPointerOut={() => {
+                document.body.style.cursor = "auto";
+              }}
+            >
+              <sphereGeometry args={[size, 12, 12]} />
+              <meshBasicMaterial color={color} toneMapped={false} />
+            </mesh>
+            <mesh>
+              <sphereGeometry args={[size * 2.4, 12, 12]} />
+              <meshBasicMaterial color={color} transparent opacity={0.18} toneMapped={false} />
+            </mesh>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+function SunLight() {
+  const light = useRef<THREE.DirectionalLight>(null);
+  useEffect(() => {
+    const update = () => {
+      const { lat, lon } = subsolarPoint();
+      const position = latLonToVector3(lat, lon, 12);
+      light.current?.position.copy(position);
+    };
+    update();
+    const timer = setInterval(update, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  return <directionalLight ref={light} intensity={2.4} color="#fff6e8" />;
+}
+
+function CameraRig({
+  focus,
+  autoRotate,
+  interactive = true,
+}: {
+  focus?: { lat: number; lon: number } | null | undefined;
+  autoRotate: boolean;
+  interactive?: boolean | undefined;
+}) {
+  const { camera } = useThree();
+  const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
+  const flight = useRef<{ from: THREE.Vector3; to: THREE.Vector3; t: number } | null>(null);
+
+  useEffect(() => {
+    if (!focus) return;
+    const distance = Math.max(camera.position.length() * 0.85, 3.4);
+    flight.current = {
+      from: camera.position.clone(),
+      to: latLonToVector3(focus.lat, focus.lon, distance),
+      t: 0,
+    };
+  }, [focus, camera]);
+
+  useFrame((_, delta) => {
+    const flying = flight.current;
+    if (flying) {
+      flying.t = Math.min(flying.t + delta * 1.1, 1);
+      const eased = 1 - (1 - flying.t) ** 3;
+      const from = flying.from.clone().normalize();
+      const to = flying.to.clone().normalize();
+      const angle = Math.acos(THREE.MathUtils.clamp(from.dot(to), -1, 1));
+      const direction =
+        angle < 1e-4
+          ? to
+          : from
+              .clone()
+              .multiplyScalar(Math.sin((1 - eased) * angle) / Math.sin(angle))
+              .add(to.clone().multiplyScalar(Math.sin(eased * angle) / Math.sin(angle)))
+              .normalize();
+      const radius = THREE.MathUtils.lerp(flying.from.length(), flying.to.length(), eased);
+      camera.position.copy(direction.multiplyScalar(radius));
+      camera.lookAt(0, 0, 0);
+
+      if (flying.t >= 1) {
+        flight.current = null;
+      }
+    }
+
+    // Always update controls each frame so damping and auto-rotation operate smoothly
+    controlsRef.current?.update();
+  });
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      enabled={interactive}
+      enablePan={false}
+      enableDamping
+      dampingFactor={0.08}
+      rotateSpeed={0.5}
+      zoomSpeed={0.8}
+      minDistance={2.6}
+      maxDistance={9}
+      autoRotate={autoRotate && !flight.current}
+      autoRotateSpeed={0.3}
+      onStart={() => {
+        // Cancel automated flight animation immediately when user manually drags
+        flight.current = null;
+      }}
+    />
+  );
+}
+
+export default function GlobeScene({
+  markers,
+  focus,
+  autoRotate = true,
+  interactive = true,
+  showOrbitalTrack = false,
+  onSelect,
+}: GlobeSceneProps) {
+  return (
+    <Canvas
+      className="touch-none select-none"
+      camera={{ position: [0, 1.4, 5.2], fov: 42 }}
+      dpr={[1, 2]}
+      gl={{ antialias: true, powerPreference: "high-performance" }}
+      style={{ background: "transparent", width: "100%", height: "100%" }}
+    >
+      <ambientLight intensity={0.28} color="#5f7fa8" />
+      <SunLight />
+      <hemisphereLight intensity={0.15} color="#6ad4ff" groundColor="#0b1220" />
+      <Stars radius={80} depth={40} count={2600} factor={3} saturation={0} fade speed={0.4} />
+      <Suspense fallback={null}>
+        <Earth />
+      </Suspense>
+      <Atmosphere />
+      {showOrbitalTrack && <OrbitalPath />}
+      <Markers markers={markers} onSelect={onSelect} />
+      <CameraRig focus={focus ?? null} autoRotate={autoRotate} interactive={interactive} />
+    </Canvas>
+  );
+}
 
 <!-- ══════════ SIDEBAR ══════════ -->
 <aside id="sidebar" class="fixed left-0 top-0 h-full w-[220px] glass z-40 flex flex-col transition-transform duration-300 -translate-x-full lg:translate-x-0">
